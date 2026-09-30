@@ -1,0 +1,393 @@
+/**
+ * dsh-plugin-better-folders —— 更好的 DSH 文件夹（Client 端）。
+ *
+ * 两个注入点：
+ * 1. `settings.section`：一个「更好的 DSH 文件夹」设置页，展示分组现状、配置开关、
+ *    以及 预览 / 一键整理 / 还原 三个动作。数据走同源的 `/better-folders/api/*`。
+ * 2. `sidebar.footer.action`：侧边栏底部的一键整理按钮，点一下 = 整理 + 切到树视图。
+ *
+ * 关于「切到树视图」：DSH 侧边栏自带「按工作区树」视图，它会把每个工作区挂到最近的
+ * 已注册祖先工作区下面。整理只是把上级目录注册成工作区，真正的视觉汇合由这个内置
+ * 视图完成，所以整理后需要把分组方式切到 workspace-tree。
+ *   - 首选：`ctx.uiWorkspace.view.setGroupBy('workspace-tree')`（立即生效）；
+ *   - 兜底：改写 localStorage 里的 `dsh.workspace.view.v5`（下次刷新生效）。
+ */
+
+const React = require("react");
+const { useState, useEffect, useCallback } = React;
+
+/** DSH 设计系统变量（自动适配明暗主题）。 */
+const DSW = (v) => `var(--dsw-alias-${v})`;
+/** 侧边栏分组方式持久化键（@deepseek-ai/dsh-client-ui-workspace 的 view store）。 */
+const VIEW_STORE_KEY = "dsh.workspace.view.v5";
+/** 目标分组方式：按工作区树。 */
+const TREE_MODE = "workspace-tree";
+
+/** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
+let _ctx = null;
+
+// ── 侧边栏视图切换 ──────────────────────────────────────────────────────────
+
+/** 读取当前分组方式（读不到返回 null）。 */
+function readViewMode() {
+  try {
+    const raw = localStorage.getItem(VIEW_STORE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.groupBy === "string" ? parsed.groupBy : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 兜底：直接改写持久化的分组方式（下次刷新生效）。 */
+function writeViewMode(mode) {
+  try {
+    const raw = localStorage.getItem(VIEW_STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    parsed.groupBy = mode;
+    localStorage.setItem(VIEW_STORE_KEY, JSON.stringify(parsed));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把侧边栏切到「按工作区树」。
+ * @returns {'live' | 'reload' | 'failed'} live=已即时切换；reload=需刷新；failed=失败。
+ */
+function switchToTreeView() {
+  try {
+    const actions = _ctx?.uiWorkspace?.view;
+    if (actions && typeof actions.setGroupBy === "function") {
+      actions.setGroupBy(TREE_MODE);
+      return "live";
+    }
+  } catch {
+    /* 客户端服务不可用时走兜底 */
+  }
+  return writeViewMode(TREE_MODE) ? "reload" : "failed";
+}
+
+// ── Host API ────────────────────────────────────────────────────────────────
+
+async function api(path, options) {
+  const response = await fetch(`/better-folders/api${path}`, {
+    method: options?.method || "GET",
+    headers: options?.body ? { "Content-Type": "application/json" } : undefined,
+    body: options?.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+  return data;
+}
+
+// ── 样式 ────────────────────────────────────────────────────────────────────
+
+const styles = {
+  root: { fontSize: "13px", color: DSW("label-primary"), fontFamily: DSW("font-family") },
+  lead: { color: DSW("label-secondary"), fontSize: "12.5px", lineHeight: 1.6, marginBottom: "14px" },
+  statRow: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "14px" },
+  stat: {
+    background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    borderRadius: "10px", padding: "10px 14px", minWidth: "104px",
+  },
+  statNum: { fontSize: "20px", fontWeight: 600, color: DSW("label-primary") },
+  statLabel: { fontSize: "11.5px", color: DSW("label-tertiary"), marginTop: "2px" },
+  box: {
+    background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    borderRadius: "10px", padding: "12px 14px", marginBottom: "12px",
+  },
+  boxTitle: { color: DSW("label-secondary"), fontSize: "12.5px", fontWeight: 600, marginBottom: "8px" },
+  switchRow: { display: "flex", alignItems: "center", gap: "8px", margin: "7px 0" },
+  switchLabel: { color: DSW("label-primary"), cursor: "pointer", fontSize: "12.5px" },
+  hint: { color: DSW("label-tertiary"), fontSize: "11.5px", lineHeight: 1.5, marginTop: "4px" },
+  numRow: { display: "flex", alignItems: "center", gap: "10px", margin: "9px 0" },
+  numLabel: { color: DSW("label-secondary"), width: "190px", flex: "none", fontSize: "12.5px" },
+  input: {
+    width: "76px", background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    color: DSW("label-primary"), borderRadius: "8px", padding: "6px 9px", fontSize: "13px", outline: "none",
+  },
+  btn: {
+    border: "none", color: "#fff", borderRadius: "8px", padding: "8px 20px",
+    fontSize: "13px", cursor: "pointer", fontWeight: 500, marginRight: "8px",
+  },
+  btnGhost: {
+    background: "transparent", border: `1px solid ${DSW("border-l2")}`,
+    color: DSW("label-primary"), borderRadius: "8px", padding: "7px 18px",
+    fontSize: "13px", cursor: "pointer", marginRight: "8px",
+  },
+  msg: { color: DSW("label-secondary"), fontSize: "12px", marginTop: "10px", whiteSpace: "pre-wrap", lineHeight: 1.6 },
+  group: {
+    display: "flex", alignItems: "center", gap: "8px", padding: "6px 0",
+    borderTop: `1px solid ${DSW("border-l2")}`, fontSize: "12.5px",
+  },
+  groupPath: { flex: 1, color: DSW("label-primary"), wordBreak: "break-all" },
+  tag: { fontSize: "11px", padding: "2px 7px", borderRadius: "999px", flex: "none" },
+  empty: { color: DSW("label-tertiary"), fontSize: "12.5px", padding: "10px 0" },
+};
+
+function Tag({ ok, text }) {
+  return React.createElement("span", {
+    style: {
+      ...styles.tag,
+      background: ok ? "rgba(46,160,67,0.14)" : "rgba(210,153,34,0.16)",
+      color: ok ? "#2ea043" : "#bf8700",
+    },
+  }, text);
+}
+
+// ── 设置面板 ────────────────────────────────────────────────────────────────
+
+function BetterFoldersPanel() {
+  const [status, setStatus] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const [viewMode, setViewMode] = useState(() => readViewMode());
+
+  const reload = useCallback(async () => {
+    try {
+      const data = await api("/status");
+      setStatus(data);
+      if (data?.config) setConfig(data.config);
+    } catch (error) {
+      setMessage(`读取状态失败：${error.message}`);
+    }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+
+  const patchConfig = async (patch) => {
+    setConfig((current) => ({ ...(current || {}), ...patch }));
+    try {
+      const data = await api("/settings", { method: "POST", body: patch });
+      if (data?.config) setConfig(data.config);
+    } catch (error) {
+      setMessage(`保存设置失败：${error.message}`);
+    }
+  };
+
+  const run = async (kind) => {
+    setBusy(kind);
+    setMessage("");
+    try {
+      const data = await api(`/${kind}`, { method: "POST", body: {} });
+      if (kind === "apply") {
+        const lines = (data.actions || [])
+          .filter((action) => action.action === "created" || action.action === "failed")
+          .map((action) => `· ${action.action === "created" ? "新建" : "失败"} ${action.path}${action.error ? `（${action.error}）` : ""}`);
+        setMessage([`已整理：新建 ${data.createdCount} 个文件夹节点，失败 ${data.failedCount} 个。`, ...lines].join("\n"));
+        if (config?.autoTreeView !== false && data.createdCount > 0) {
+          const outcome = switchToTreeView();
+          setViewMode(TREE_MODE);
+          if (outcome === "reload") setMessage((text) => `${text}\n分组方式已记录为「按工作区树」，刷新页面后生效。`);
+          if (outcome === "failed") setMessage((text) => `${text}\n未能自动切换视图，请手动选择「视图选项 → 分组方式 → 按工作区树」。`);
+        }
+      } else if (kind === "preview") {
+        const pending = (data.actions || []).filter((action) => action.action === "create");
+        setMessage(pending.length === 0
+          ? "没有需要新建的文件夹节点，工作区已经整理好了。"
+          : `预览：将新建 ${pending.length} 个文件夹节点\n${pending.map((action) => `· ${action.path}（汇合 ${action.childCount} 个工作区）`).join("\n")}`);
+      } else if (kind === "unmerge") {
+        setMessage([`已还原：删除 ${data.removed?.length || 0} 个文件夹节点。`,
+          ...(data.removed || []).map((item) => `· 已删除 ${item.path}`),
+          ...(data.kept || []).map((item) => `· 保留 ${item.path}（${item.reason}）`),
+          data.autoOrganizeDisabled ? "已同时关闭「自动整理」，避免刚还原就被自动重建。需要时可在上方重新打开。" : "",
+        ].filter(Boolean).join("\n"));
+      }
+      await reload();
+    } catch (error) {
+      setMessage(`操作失败：${error.message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const switchView = () => {
+    const outcome = switchToTreeView();
+    setViewMode(TREE_MODE);
+    if (outcome === "live") setMessage("已切换到「按工作区树」视图。");
+    else if (outcome === "reload") setMessage("已记录为「按工作区树」，刷新页面后生效。");
+    else setMessage("切换失败，请手动选择「视图选项 → 分组方式 → 按工作区树」。");
+  };
+
+  if (!status || !config) {
+    return React.createElement("div", { style: styles.root },
+      React.createElement("div", { style: styles.lead }, "加载中…"));
+  }
+
+  const cfg = config;
+  const groups = status.groups || [];
+
+  return React.createElement("div", { style: styles.root },
+    React.createElement("div", { style: styles.lead },
+      "DSH 侧边栏的工作区是按目录平铺的。本插件把同一个上级目录下的多个工作区汇合到一个可折叠的文件夹节点里",
+      "（做法是把该上级目录注册成一个工作区，DSH 内置的「按工作区树」视图会自动把子工作区嵌进去）。",
+      "整理只新增工作区注册，不会删除磁盘目录或会话历史。"),
+
+    React.createElement("div", { style: styles.statRow },
+      React.createElement("div", { style: styles.stat },
+        React.createElement("div", { style: styles.statNum }, String(status.workspaceCount ?? 0)),
+        React.createElement("div", { style: styles.statLabel }, "已注册工作区")),
+      React.createElement("div", { style: styles.stat },
+        React.createElement("div", { style: styles.statNum }, String(status.groupCount ?? 0)),
+        React.createElement("div", { style: styles.statLabel }, "可汇合目录")),
+      React.createElement("div", { style: styles.stat },
+        React.createElement("div", { style: styles.statNum }, String(status.mergedCount ?? 0)),
+        React.createElement("div", { style: styles.statLabel }, "已建文件夹节点")),
+      React.createElement("div", { style: styles.stat },
+        React.createElement("div", { style: styles.statNum }, String(status.pendingCount ?? 0)),
+        React.createElement("div", { style: styles.statLabel }, "待建")),
+      React.createElement("div", { style: styles.stat },
+        React.createElement("div", { style: styles.statNum }, String(status.trackedFolders?.length ?? 0)),
+        React.createElement("div", { style: styles.statLabel }, "本插件创建")),
+    ),
+
+    React.createElement("div", { style: styles.box },
+      React.createElement("div", { style: styles.boxTitle }, "分组现状"),
+      groups.length === 0
+        ? React.createElement("div", { style: styles.empty }, "还没有可汇合的目录：至少需要 2 个工作区共享同一个上级目录。")
+        : groups.map((group) => React.createElement("div", { key: group.path, style: styles.group },
+          React.createElement(Tag, {
+            ok: group.state === "merged",
+            text: group.state === "merged" ? "已是工作区" : "待新建",
+          }),
+          React.createElement("span", { style: styles.groupPath }, group.path),
+          React.createElement("span", { style: { color: DSW("label-tertiary") } }, `${group.childCount} 个子工作区`),
+        )),
+      React.createElement("div", { style: styles.hint },
+        `当前侧边栏分组方式：${viewMode === TREE_MODE ? "按工作区树（已生效）" : (viewMode || "未读取到")}`),
+      viewMode !== TREE_MODE && React.createElement("button", {
+        style: { ...styles.btnGhost, marginTop: "8px" }, onClick: switchView,
+      }, "切换到「按工作区树」"),
+    ),
+
+    (status.trackedFolders || []).length > 0 && React.createElement("div", { style: styles.box },
+      React.createElement("div", { style: styles.boxTitle }, "本插件创建的文件夹节点（点「还原」可移除）"),
+      (status.trackedFolders || []).map((item) => React.createElement("div", { key: item.id, style: styles.group },
+        React.createElement(Tag, { ok: item.alive, text: item.alive ? "在用" : "已不在注册表" }),
+        React.createElement("span", { style: styles.groupPath }, item.path || item.id),
+      )),
+      React.createElement("div", { style: styles.hint },
+        "还原只删除这些节点，并且会跳过已经在里面开过会话的；不会动磁盘目录、会话历史或你自己建的工作区。"),
+    ),
+
+    React.createElement("div", { style: styles.box },
+      React.createElement("div", { style: styles.boxTitle }, "整理规则"),
+      React.createElement("div", { style: styles.switchRow },
+        React.createElement("input", {
+          type: "checkbox", id: "bf-enabled", checked: cfg.enabled !== false,
+          onChange: (event) => void patchConfig({ enabled: event.target.checked }),
+        }),
+        React.createElement("label", { htmlFor: "bf-enabled", style: styles.switchLabel }, "启用「更好的 DSH 文件夹」")),
+      React.createElement("div", { style: styles.switchRow },
+        React.createElement("input", {
+          type: "checkbox", id: "bf-auto", checked: cfg.autoOrganize !== false,
+          onChange: (event) => void patchConfig({ autoOrganize: event.target.checked }),
+        }),
+        React.createElement("label", { htmlFor: "bf-auto", style: styles.switchLabel }, "自动整理：工作区列表变化后自动汇合")),
+      React.createElement("div", { style: styles.switchRow },
+        React.createElement("input", {
+          type: "checkbox", id: "bf-tree", checked: cfg.autoTreeView !== false,
+          onChange: (event) => void patchConfig({ autoTreeView: event.target.checked }),
+        }),
+        React.createElement("label", { htmlFor: "bf-tree", style: styles.switchLabel }, "整理后自动切换到「按工作区树」视图")),
+      React.createElement("div", { style: styles.switchRow },
+        React.createElement("input", {
+          type: "checkbox", id: "bf-order", checked: cfg.keepOrder !== false,
+          onChange: (event) => void patchConfig({ keepOrder: event.target.checked }),
+        }),
+        React.createElement("label", { htmlFor: "bf-order", style: styles.switchLabel }, "把文件夹节点排在它的第一个子工作区之前")),
+
+      React.createElement("div", { style: styles.numRow },
+        React.createElement("span", { style: styles.numLabel }, "最少同级工作区数量"),
+        React.createElement("input", {
+          style: styles.input, type: "number", min: 2, max: 64, value: cfg.minChildren ?? 2,
+          onChange: (event) => void patchConfig({ minChildren: Number(event.target.value) }),
+        })),
+      React.createElement("div", { style: styles.hint }, "低于该数量的目录不会建文件夹节点（默认 2：只有一个子工作区时没有汇合的意义）。"),
+
+      React.createElement("div", { style: styles.numRow },
+        React.createElement("span", { style: styles.numLabel }, "向上追溯级数"),
+        React.createElement("input", {
+          style: styles.input, type: "number", min: 1, max: 8, value: cfg.maxDepth ?? 1,
+          onChange: (event) => void patchConfig({ maxDepth: Number(event.target.value) }),
+        })),
+      React.createElement("div", { style: styles.hint }, "1 = 只看直接上级目录；调大后会为更上层的公共祖先也建文件夹节点。"),
+    ),
+
+    React.createElement("div", null,
+      React.createElement("button", {
+        style: { ...styles.btn, background: DSW("button-info-fill") },
+        disabled: busy !== "", onClick: () => void run("apply"),
+      }, busy === "apply" ? "整理中…" : "一键整理"),
+      React.createElement("button", {
+        style: styles.btnGhost, disabled: busy !== "", onClick: () => void run("preview"),
+      }, busy === "preview" ? "预览中…" : "预览"),
+      React.createElement("button", {
+        style: { ...styles.btnGhost, color: DSW("label-secondary") },
+        disabled: busy !== "", onClick: () => void run("unmerge"),
+      }, busy === "unmerge" ? "还原中…" : "还原"),
+    ),
+    message ? React.createElement("div", { style: styles.msg }, message) : null,
+  );
+}
+
+// ── 侧边栏快捷按钮 ──────────────────────────────────────────────────────────
+
+function SidebarQuickButton() {
+  const [busy, setBusy] = useState(false);
+
+  const onClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await api("/apply", { method: "POST", body: {} });
+      if (data?.config?.autoTreeView !== false) switchToTreeView();
+      if (data?.createdCount > 0) {
+        console.log(`[better-folders] 已新建 ${data.createdCount} 个文件夹节点`);
+      }
+    } catch (error) {
+      console.warn("[better-folders] 整理失败:", error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return React.createElement("button", {
+    onClick,
+    disabled: busy,
+    title: "更好的 DSH 文件夹：把同一上级目录下的工作区汇合到一起",
+    style: {
+      display: "flex", alignItems: "center", gap: "6px",
+      background: "transparent", border: `1px solid ${DSW("border-l2")}`,
+      color: DSW("label-secondary"), borderRadius: "6px", cursor: "pointer",
+      padding: "6px 10px", fontSize: "12.5px",
+    },
+  }, React.createElement("span", { style: { fontSize: "14px" } }, "📁"), busy ? "整理中…" : "整理文件夹");
+}
+
+// ── 插件入口 ────────────────────────────────────────────────────────────────
+
+const name = "dsh-plugin-better-folders";
+const inject = ["slots"];
+
+function apply(ctx) {
+  _ctx = ctx;
+
+  ctx.slots.inject("settings.section", () =>
+    ctx.slots.register(
+      { name: "settings.section", id: "better-folders", order: 103, label: "更好的 DSH 文件夹" },
+      BetterFoldersPanel,
+    ));
+
+  ctx.slots.inject("sidebar.footer.action", () =>
+    ctx.slots.register(
+      { name: "sidebar.footer.action", id: "better-folders", order: 60 },
+      SidebarQuickButton,
+    ));
+}
+
+module.exports = { name, inject, apply };
