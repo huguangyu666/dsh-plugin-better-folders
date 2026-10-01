@@ -89,11 +89,15 @@ test('apply 注册工具、指令、提示词段与 HTTP 路由', () => {
 
   apply(ctx)
 
-  assert.equal(registered.tools.length, 1)
-  assert.equal(registered.tools[0].name, 'organize_workspaces')
+  const names = registered.tools.map((tool) => tool.name).sort()
+  assert.deepEqual(names, ['manage_workspace_tables', 'organize_workspaces'])
+  const organizeTool = registered.tools.find((tool) => tool.name === 'organize_workspaces')
   // 坑 5：parameters 必须是合法 JSON Schema 对象。
-  assert.equal(registered.tools[0].parameters.type, 'object')
-  assert.ok(Array.isArray(registered.tools[0].parameters.properties.action.enum))
+  assert.equal(organizeTool.parameters.type, 'object')
+  assert.ok(Array.isArray(organizeTool.parameters.properties.action.enum))
+  const tablesTool = registered.tools.find((tool) => tool.name === 'manage_workspace_tables')
+  assert.equal(tablesTool.parameters.type, 'object')
+  assert.ok(Array.isArray(tablesTool.parameters.properties.action.enum))
 
   assert.equal(registered.commands.length, 1)
   assert.equal(registered.commands[0].name, 'folders')

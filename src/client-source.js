@@ -476,11 +476,463 @@ function BetterFoldersPanel() {
   );
 }
 
+// ── 官方组件库（Module Loader 车道的隐式外部依赖）───────────────────────────
+//
+// ui-workspace 的文档明确：Module Loader 车道的客户端插件可以 require
+// `@deepseek-ai/dsh-client-ui-primitives`，它是隐式基线外部依赖。用它拿官方图标与
+// Tooltip，画风才能和侧边栏原生按钮完全一致；拿不到就退化为字符图标，功能不受影响。
+
+let primitives = null;
+try {
+  primitives = require("@deepseek-ai/dsh-client-ui-primitives") || null;
+} catch {
+  primitives = null;
+}
+
+/** 渲染一个官方图标（拿不到组件库时返回 null）。 */
+function OfficialIcon({ name, size = 14 }) {
+  const Component = primitives?.[name];
+  if (typeof Component !== "function") return null;
+  return React.createElement(Component, { size });
+}
+
+/**
+ * 官方图标优先，缺失时退化为字符图标 —— 组件库不可用也不该让按钮消失。
+ * @param {string} name 图标导出名。
+ * @param {string} fallback 字符兜底。
+ * @param {number} [size] 尺寸。
+ * @returns {object} React 元素。
+ */
+function iconOr(name, fallback, size = 14) {
+  const Component = primitives?.[name];
+  if (typeof Component === "function") return React.createElement(Component, { size });
+  return React.createElement("span", { style: { fontSize: `${size}px`, lineHeight: 1 } }, fallback);
+}
+
+/** 图标按钮样式：逐字对齐 ui-workspace 的 searchButton（28×28 / radius-sm / 透明底）。 */
+const HEADER_ICON_BUTTON = {
+  width: "28px",
+  height: "28px",
+  borderRadius: "var(--dsw-radius-sm, 6px)",
+  border: "none",
+  background: "transparent",
+  color: "inherit",
+  cursor: "pointer",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  flex: "none",
+};
+
+/** 注入一次悬停样式（官方按钮靠 CSS module，这里用等价的最小样式补齐）。 */
+const HEADER_CSS = `
+.bf-icon-btn:hover{background:var(--dsw-alias-bg-module-platform,#8882);}
+.bf-icon-btn[data-active="true"]{background:var(--dsw-alias-bg-module-platform,#8882);color:var(--dsw-alias-label-primary);}
+.bf-row:hover{background:var(--dsw-alias-bg-module-platform,#8882);}
+`;
+
+// ── 定位「工作区」标题行 ────────────────────────────────────────────────────
+//
+// 这一行没有对外槽位（搜索 / 视图选项 / 添加工作区都是 ui-workspace 内部写死的），
+// 所以走「只读测量 + 浮层贴合」：找到那行的 DOM 取位置，把按钮浮在它左边，
+// **不修改官方 DOM**，因此不会和 React 的协调打架。
+
+/**
+ * 找到左侧栏里的「工作区」标题行。
+ * @returns {{ node: Element, rect: DOMRect } | null} 命中项。
+ */
+function findWorkspaceHeader() {
+  try {
+    const nodes = document.querySelectorAll('[class*="sectionHeader"]');
+    let best = null;
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (rect.left > 460) continue; // 必须在左侧栏内
+      if (node.querySelectorAll("button").length < 2) continue; // 搜索 + 视图选项 + 添加
+      if (best === null || rect.top < best.rect.top) best = { node, rect };
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 订阅标题行的位置（窗口尺寸 / 滚动 / 布局变化都会重测）。
+ * @returns {{ rect: DOMRect | null, searchLeft: number | null }} 当前位置。
+ */
+function useHeaderAnchor() {
+  const [anchor, setAnchor] = useState({ rect: null, searchLeft: null });
+  useEffect(() => {
+    let alive = true;
+    const measure = () => {
+      if (!alive) return;
+      const found = findWorkspaceHeader();
+      if (found === null) {
+        setAnchor((current) => (current.rect === null ? current : { rect: null, searchLeft: null }));
+        return;
+      }
+      const firstButton = found.node.querySelector("button");
+      const searchLeft = firstButton === null ? null : firstButton.getBoundingClientRect().left;
+      setAnchor({ rect: found.rect, searchLeft });
+    };
+    measure();
+    const timer = setInterval(measure, 600);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, []);
+  return anchor;
+}
+
+// ── 「表」数据 ──────────────────────────────────────────────────────────────
+
+async function loadTables() {
+  return api("/collections");
+}
+
+async function mutateTables(action, payload) {
+  return api("/collections", { method: "POST", body: { action, ...payload } });
+}
+
+// ── 「表」切换面板 ──────────────────────────────────────────────────────────
+
+const PANEL_STYLE = {
+  position: "fixed",
+  zIndex: 60,
+  width: "340px",
+  maxHeight: "60vh",
+  overflow: "auto",
+  background: "var(--dsw-alias-bg-module-platform, #1c1c1e)",
+  border: "1px solid var(--dsw-alias-border-l2, #ffffff22)",
+  borderRadius: "var(--dsw-radius-md, 10px)",
+  boxShadow: "0 12px 32px rgba(0,0,0,.35)",
+  padding: "10px",
+  fontSize: "12.5px",
+  color: "var(--dsw-alias-label-primary, #fff)",
+};
+
+function Chip({ active, children, onClick, title }) {
+  return React.createElement("button", {
+    type: "button",
+    onClick,
+    title,
+    style: {
+      border: "1px solid var(--dsw-alias-border-l2, #ffffff22)",
+      background: active ? "var(--dsw-alias-button-info-fill, #1f6feb)" : "transparent",
+      color: active ? "#fff" : "var(--dsw-alias-label-secondary, #bbb)",
+      borderRadius: "999px",
+      padding: "3px 10px",
+      fontSize: "12px",
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      flex: "none",
+    },
+  }, children);
+}
+
+/**
+ * 「表」面板：切换 + 管理。
+ * @param {{ onClose: Function, anchorLeft: number, anchorTop: number }} props 位置与关闭回调。
+ * @returns {object} React 元素。
+ */
+function TablesPanel({ onClose, anchorLeft, anchorTop }) {
+  const [data, setData] = useState(null);
+  const [activeId, setActiveId] = useState(null);
+  const [manage, setManage] = useState(false);
+  const [expanded, setExpanded] = useState({});
+  const [note, setNote] = useState("");
+
+  const refresh = useCallback(async (keepActive = true) => {
+    try {
+      const next = await loadTables();
+      setData(next);
+      setActiveId((current) => {
+        if (!keepActive || current === null) return next.collections[0]?.id ?? null;
+        return next.collections.some((entry) => entry.id === current) ? current : (next.collections[0]?.id ?? null);
+      });
+    } catch (error) {
+      setNote(`读取失败：${error.message}`);
+    }
+  }, []);
+
+  useEffect(() => { void refresh(false); }, [refresh]);
+
+  const run = async (action, payload) => {
+    setNote("");
+    try {
+      await mutateTables(action, payload);
+      await refresh();
+    } catch (error) {
+      setNote(`操作失败：${error.message}`);
+    }
+  };
+
+  const collections = data?.collections ?? [];
+  const workspaces = data?.workspaces ?? [];
+  const active = collections.find((entry) => entry.id === activeId) ?? null;
+  const memberIds = new Set(active?.workspaceIds ?? []);
+  const shown = manage ? workspaces : workspaces.filter((workspace) => memberIds.has(workspace.id));
+
+  const openWorkspace = (workspaceId) => {
+    try {
+      _ctx?.uiWorkspace?.openWorkspace?.(workspaceId);
+      onClose();
+    } catch (error) {
+      setNote(`打开失败：${error.message}`);
+    }
+  };
+
+  const openSession = (sessionId) => {
+    try {
+      _ctx?.uiWorkspace?.openSession?.(sessionId);
+      onClose();
+    } catch (error) {
+      setNote(`打开失败：${error.message}`);
+    }
+  };
+
+  return React.createElement(React.Fragment, null,
+    // 点击外部关闭
+    React.createElement("div", {
+      onClick: onClose,
+      style: { position: "fixed", inset: 0, zIndex: 59, background: "transparent" },
+    }),
+    React.createElement("div", {
+      style: { ...PANEL_STYLE, left: `${anchorLeft}px`, top: `${anchorTop}px` },
+      onClick: (event) => event.stopPropagation(),
+    },
+    React.createElement("style", null, HEADER_CSS),
+
+    // 表选择
+    React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" } },
+      collections.map((entry) => React.createElement(Chip, {
+        key: entry.id,
+        active: entry.id === activeId,
+        title: `${entry.workspaceIds.length} 个工作区`,
+        onClick: () => setActiveId(entry.id),
+      }, entry.name)),
+      React.createElement("button", {
+        type: "button",
+        title: "新建表",
+        style: { ...HEADER_ICON_BUTTON, width: "22px", height: "22px" },
+        onClick: () => {
+          const name = window.prompt("新表的名字", "新表");
+          if (name !== null && name.trim().length > 0) void run("create", { name });
+        },
+      }, iconOr("IconAddOutlineRegular", "+", 13)),
+    ),
+
+    // 工具栏
+    React.createElement("div", {
+      style: { display: "flex", gap: "6px", alignItems: "center", margin: "8px 0 6px", color: "var(--dsw-alias-label-tertiary, #888)" },
+    },
+      React.createElement("span", null, active === null ? "还没有表" : `${active.name} · ${active.workspaceIds.length} 个工作区`),
+      React.createElement("span", { style: { flex: 1 } }),
+      active !== null && React.createElement(Chip, {
+        active: manage,
+        onClick: () => setManage((value) => !value),
+        title: manage ? "回到切换视图" : "编辑这个表的成员",
+      }, manage ? "完成" : "编辑"),
+      active !== null && manage && React.createElement(Chip, {
+        active: false,
+        title: "重命名这个表",
+        onClick: () => {
+          const name = window.prompt("新的表名", active.name);
+          if (name !== null && name.trim().length > 0) void run("rename", { id: active.id, name });
+        },
+      }, "改名"),
+      active !== null && manage && React.createElement(Chip, {
+        active: false,
+        title: "删除这个表（不删任何工作区/目录/会话）",
+        onClick: () => {
+          if (window.confirm(`删除表「${active.name}」？表只是集合，工作区、目录、会话都不会动。`)) {
+            void run("delete", { id: active.id });
+          }
+        },
+      }, "删除"),
+    ),
+
+    // 工作区 / 会话列表
+    React.createElement("div", null,
+      shown.length === 0
+        ? React.createElement("div", { style: { color: "var(--dsw-alias-label-tertiary, #888)", padding: "10px 2px", lineHeight: 1.6 } },
+          active === null
+            ? "点上面的「＋」建一个表，再点「编辑」把工作区加进来。"
+            : (manage ? "这个表还没有成员，勾选下面的工作区加入。" : "这个表还没有成员。点「编辑」加入工作区。"))
+        : shown.map((workspace) => {
+          const isMember = memberIds.has(workspace.id);
+          const isOpen = expanded[workspace.id] === true;
+          return React.createElement("div", { key: workspace.id },
+            React.createElement("div", {
+              className: "bf-row",
+              style: { display: "flex", alignItems: "center", gap: "6px", padding: "6px", borderRadius: "var(--dsw-radius-sm, 6px)" },
+            },
+              manage && React.createElement("input", {
+                type: "checkbox",
+                checked: isMember,
+                title: isMember ? "移出这个表" : "加入这个表",
+                onChange: () => void run("toggleMember", { id: active.id, workspaceId: workspace.id }),
+              }),
+              React.createElement("span", {
+                onClick: () => manage ? null : openWorkspace(workspace.id),
+                title: workspace.path,
+                style: { flex: 1, cursor: manage ? "default" : "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+              }, workspace.title || workspace.path),
+              React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary, #888)", flex: "none" } },
+                `${workspace.sessionCount} 会话`),
+              !manage && workspace.sessions.length > 0 && React.createElement("button", {
+                type: "button",
+                title: isOpen ? "收起会话" : "展开会话",
+                style: { ...HEADER_ICON_BUTTON, width: "20px", height: "20px" },
+                onClick: () => setExpanded((current) => ({ ...current, [workspace.id]: !isOpen })),
+              }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 12)),
+            ),
+            isOpen && React.createElement("div", { style: { margin: "0 0 4px 24px" } },
+              workspace.sessions.map((session) => React.createElement("div", {
+                key: session.id,
+                className: "bf-row",
+                title: session.id,
+                onClick: () => openSession(session.id),
+                style: {
+                  padding: "4px 6px",
+                  borderRadius: "var(--dsw-radius-sm, 6px)",
+                  cursor: "pointer",
+                  color: session.title ? "inherit" : "var(--dsw-alias-label-tertiary, #888)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                },
+              }, session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）"))),
+            ),
+          );
+        }),
+    ),
+
+    note ? React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-secondary, #bbb)" } }, note) : null,
+    React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-tertiary, #888)", lineHeight: 1.6 } },
+      "表只是工作区的集合视图，不创建目录、不改工作目录、不碰会话历史。"),
+    ),
+  );
+}
+
+// ── 标题行图标按钮 ──────────────────────────────────────────────────────────
+
+/** 标题行按钮是否已挂载（挂上后隐藏底部按钮，避免重复入口）。 */
+let _headerMounted = false;
+const _headerSubscribers = new Set();
+
+/**
+ * 广播标题行按钮的挂载状态。
+ * @param {boolean} value 是否已挂载。
+ * @returns {void}
+ */
+function setHeaderMounted(value) {
+  if (_headerMounted === value) return;
+  _headerMounted = value;
+  for (const listener of _headerSubscribers) {
+    try {
+      listener(value);
+    } catch { /* 单个订阅者出错不影响其它 */ }
+  }
+}
+
+function WorkspaceHeaderActions() {
+  const anchor = useHeaderAnchor();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const mounted = anchor.rect !== null;
+  useEffect(() => {
+    setHeaderMounted(mounted);
+    return () => setHeaderMounted(false);
+  }, [mounted]);
+
+  if (!mounted) return null; // 定位不到标题行 -> 不渲染，交给底部按钮兜底
+
+  const rowTop = anchor.rect.top + (anchor.rect.height - 28) / 2;
+  const gap = 4;
+  const clusterWidth = 28 * 2 + gap;
+  const left = anchor.searchLeft === null
+    ? anchor.rect.right - clusterWidth - 4
+    : Math.max(anchor.rect.left + 4, anchor.searchLeft - clusterWidth - gap);
+
+  const organize = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote("");
+    try {
+      const data = await api("/apply", { method: "POST", body: {} });
+      if (data?.config?.autoTreeView !== false) switchToTreeView();
+      const created = data?.createdCount || 0;
+      setNote(created > 0 ? `已新建 ${created} 个文件夹节点` : "已是最新，无需整理");
+    } catch (error) {
+      setNote(`失败：${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return React.createElement(React.Fragment, null,
+    React.createElement("style", null, HEADER_CSS),
+    React.createElement("div", {
+      style: {
+        position: "fixed",
+        left: `${left}px`,
+        top: `${rowTop}px`,
+        display: "flex",
+        alignItems: "center",
+        gap: `${gap}px`,
+        zIndex: 58,
+        color: "var(--dsw-alias-label-tertiary, #888)",
+      },
+    },
+    React.createElement("button", {
+      type: "button",
+      className: "bf-icon-btn",
+      style: HEADER_ICON_BUTTON,
+      title: note || "整理工作区：把同一上级目录下的工作区汇合成文件夹节点",
+      disabled: busy,
+      onClick: organize,
+    }, iconOr("IconFolderOpenOutlineRegular", "📁", 14)),
+
+    React.createElement("button", {
+      type: "button",
+      className: "bf-icon-btn",
+      "data-active": open ? "true" : "false",
+      style: HEADER_ICON_BUTTON,
+      title: "表：把任意几个工作区圈在一起，方便来回切换",
+      onClick: () => setOpen((value) => !value),
+    }, iconOr("IconFlatListOutlineRegular", "📋", 14)),
+    ),
+
+    open && React.createElement(TablesPanel, {
+      onClose: () => setOpen(false),
+      anchorLeft: left,
+      anchorTop: rowTop + 34,
+    }),
+  );
+}
+
 // ── 侧边栏快捷按钮 ──────────────────────────────────────────────────────────
 
 function SidebarQuickButton() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [headerMounted, setHeaderMountedState] = useState(_headerMounted);
+
+  // 标题行按钮挂上后，这个底部按钮就让位（同一功能不重复摆两个入口）。
+  useEffect(() => {
+    const listener = (value) => setHeaderMountedState(value);
+    _headerSubscribers.add(listener);
+    return () => _headerSubscribers.delete(listener);
+  }, []);
 
   const onClick = async () => {
     if (busy) return;
@@ -507,6 +959,8 @@ function SidebarQuickButton() {
   };
 
   const label = busy ? "整理中…" : (note || "整理文件夹");
+
+  if (headerMounted) return null;
 
   return React.createElement("button", {
     onClick,
@@ -546,6 +1000,13 @@ function apply(ctx) {
     ctx.slots.register(
       { name: "sidebar.footer.action", id: "better-folders", order: 60 },
       SidebarQuickButton,
+    ));
+
+  // 主入口：把图标按钮贴合到「工作区」标题行（那一行没有对外槽位，只能浮层贴合）。
+  ctx.slots.inject("shell.overlay", () =>
+    ctx.slots.register(
+      { name: "shell.overlay", id: "better-folders.header", order: 40 },
+      WorkspaceHeaderActions,
     ));
 
   // 启动后校准一次视图：整理建出的文件夹节点要靠内置「按工作区树」才看得出来。

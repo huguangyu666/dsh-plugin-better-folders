@@ -66,6 +66,11 @@ const checks = [
   [client.includes('ensureTreeViewMode'), 'client bundle 缺启动视图校准'],
   [client.includes('uiWorkspace'), 'client bundle 缺 uiWorkspace 依赖声明'],
   [client.includes('reportDiag'), 'client bundle 缺诊断上报'],
+  [host.includes('/collections'), 'host bundle 缺「表」HTTP 接口'],
+  [host.includes('manage_workspace_tables'), 'host bundle 缺「表」工具'],
+  [client.includes('shell.overlay'), 'client bundle 缺标题行浮层注册'],
+  [client.includes('sectionHeader'), 'client bundle 缺标题行定位逻辑'],
+  [client.includes('TablesPanel'), 'client bundle 缺「表」面板'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)

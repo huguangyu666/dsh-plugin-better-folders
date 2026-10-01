@@ -41,6 +41,14 @@ import {
   createOrganizer,
   normalizeConfig,
 } from './plan.js'
+import {
+  createCollection,
+  deleteCollection,
+  normalizeCollections,
+  renameCollection,
+  setMembers,
+  toggleMember,
+} from './collections.js'
 
 export const name = 'dsh-plugin-better-folders'
 /** 唯一的硬依赖：没有工作区注册表这个插件就没有意义。其余能力按需注入。 */
@@ -171,6 +179,8 @@ function saveState(next) {
 // ── 整理器实例（每次 apply 时按当前 ctx 重建）───────────────────────────────
 
 let _organizer = null
+/** 当前 Cordis 上下文（工具执行时需要读工作区/会话，而工具签名只给 args）。 */
+let _ctx = null
 
 /**
  * 构造整理器。
@@ -219,6 +229,109 @@ function writeDiag(entry) {
   } catch (error) {
     log('诊断写入失败:', error?.message ?? error)
   }
+}
+
+// ── 「表」（工作区集合）持久化 ──────────────────────────────────────────────
+//
+// 表只存工作区 id 的集合，不创建目录、不改 cwd、不碰会话历史。文件坏掉就退回空列表，
+// 绝不让插件起不来。
+
+/** 「表」状态文件路径。 */
+function collectionsFile() {
+  return path.join(path.dirname(stateFile()), 'collections.json')
+}
+
+/**
+ * 读取全部表。
+ * @returns {Array<object>} 规范化后的表列表。
+ */
+function loadCollections() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(collectionsFile(), 'utf8'))
+    return normalizeCollections(parsed)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 写入全部表（utf8 无 BOM）。
+ * @param {Array<object>} collections 表列表。
+ * @returns {boolean} 是否写入成功。
+ */
+function saveCollections(collections) {
+  try {
+    const file = collectionsFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ collections, updatedAt: new Date().toISOString() }, null, 2), 'utf8')
+    return true
+  } catch (error) {
+    log('表写入失败:', error?.message ?? error)
+    return false
+  }
+}
+
+/**
+ * 取一个会话的标题（尽力而为：拿不到就返回空串，由前端回退显示）。
+ * @param {object} ctx Cordis 上下文。
+ * @param {object} session 宿主 Session 对象。
+ * @returns {string} 标题。
+ */
+function sessionTitleOf(ctx, session) {
+  try {
+    const service = ctx?.sessionTitle
+    if (service !== undefined && typeof service.get === 'function') {
+      const title = service.get(session)
+      if (typeof title === 'string') return title
+    }
+  } catch { /* 标题服务不可用或该会话无标题 */ }
+  return ''
+}
+
+/**
+ * 组装前端要的工作区视图：每个工作区带上它的会话（含标题）。
+ *
+ * 只列**宿主当前活跃**的会话 —— 标题来自 `ctx.sessionTitle`，冷会话没有活跃 Session
+ * 对象，硬凑只会给出错位的标题，因此如实标记为「未加载」并只给数量。
+ *
+ * @param {object} ctx Cordis 上下文。
+ * @returns {Array<{ id: string, path: string, title: string, sessions: Array<object>, sessionCount: number }>} 工作区视图。
+ */
+function buildWorkspaceView(ctx) {
+  const registry = ctx?.workspaceRegistry
+  if (registry === undefined || typeof registry.list !== 'function') return []
+
+  /** 活跃会话 id -> { title, running }。 */
+  const live = new Map()
+  try {
+    const sessions = typeof ctx?.sessions?.list === 'function' ? ctx.sessions.list() : []
+    for (const session of Array.isArray(sessions) ? sessions : []) {
+      const id = session?.header?.id ?? session?.id
+      if (typeof id !== 'string' || id.length === 0) continue
+      live.set(id, { title: sessionTitleOf(ctx, session) })
+    }
+  } catch (error) {
+    log('读取活跃会话失败:', error?.message ?? error)
+  }
+
+  return registry.list().map((workspace) => {
+    const sessionIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []
+    const sessions = sessionIds.map((id) => {
+      const info = live.get(id)
+      return {
+        id,
+        title: info?.title || '',
+        live: info !== undefined,
+      }
+    })
+    return {
+      id: workspace.id,
+      path: workspace.path,
+      title: workspace.title,
+      sessionCount: sessionIds.length,
+      sessions,
+    }
+  })
 }
 
 /**
@@ -345,6 +458,63 @@ async function handleApi(ctx, req, res) {
       sendJson(res, 200, { ok: true })
       return
     }
+    if (route === '/collections' && method === 'GET') {
+      sendJson(res, 200, {
+        ok: true,
+        collections: loadCollections(),
+        workspaces: buildWorkspaceView(ctx),
+      })
+      return
+    }
+    if (route === '/collections' && method === 'POST') {
+      const body = await readBody(req)
+      const before = loadCollections()
+      let next = before
+      let detail = {}
+      switch (body?.action) {
+        case 'create': {
+          const created = createCollection(before, body.name, body.workspaceIds)
+          next = created.collections
+          detail = { collection: created.collection }
+          break
+        }
+        case 'rename': {
+          const result = renameCollection(before, body.id, body.name)
+          next = result.collections
+          detail = { changed: result.changed }
+          break
+        }
+        case 'delete': {
+          const result = deleteCollection(before, body.id)
+          next = result.collections
+          detail = { removed: result.removed }
+          break
+        }
+        case 'setMembers': {
+          const result = setMembers(before, body.id, body.workspaceIds)
+          next = result.collections
+          detail = { changed: result.changed }
+          break
+        }
+        case 'toggleMember': {
+          const result = toggleMember(before, body.id, body.workspaceId)
+          next = result.collections
+          detail = { added: result.added, changed: result.changed }
+          break
+        }
+        default:
+          sendJson(res, 400, { ok: false, error: `未知 action: ${String(body?.action)}` })
+          return
+      }
+      const written = saveCollections(next)
+      sendJson(res, 200, {
+        ok: written,
+        collections: loadCollections(),
+        workspaces: buildWorkspaceView(ctx),
+        ...detail,
+      })
+      return
+    }
     if (route === '/status' && method === 'GET') {
       sendJson(res, 200, { ..._organizer.status(), lastRun: _lastRun })
       return
@@ -424,12 +594,91 @@ const TOOL_DEFINITION = {
   },
 }
 
+// ── 「表」工具 ──────────────────────────────────────────────────────────────
+
+const COLLECTIONS_TOOL = {
+  name: 'manage_workspace_tables',
+  description:
+    '管理「表」——用户自定义的工作区集合，用来把任意几个工作区圈在一起方便切换。'
+    + '表**不是真实文件夹**：它只记录工作区 id 的集合，不创建目录、不改 cwd、不碰会话历史，'
+    + '同一个工作区可以同时属于多个表，删表不删任何东西。'
+    + 'action=list 列出全部表与工作区；create 建表（name）；rename 改名（id, name）；'
+    + 'delete 删表（id）；setMembers 整表替换成员（id, workspaceIds）；'
+    + 'toggleMember 加入/移出（id, workspaceId）。'
+    + '当用户说「把这几个工作区放一个表里」「方便我在几个测试目录间切换」时使用。',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['list', 'create', 'rename', 'delete', 'setMembers', 'toggleMember'],
+        description: 'list=列出（默认）；create=建表；rename=改名；delete=删表；setMembers=替换成员；toggleMember=加入/移出。',
+      },
+      id: { type: 'string', description: '目标表的 id（rename / delete / setMembers / toggleMember 必填）。' },
+      name: { type: 'string', description: '表名（create / rename 必填）。' },
+      workspaceId: { type: 'string', description: '单个工作区 id（toggleMember 必填）。' },
+      workspaceIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '工作区 id 列表（setMembers 必填；create 可选作为初始成员）。',
+      },
+    },
+    required: [],
+  },
+  output: TOOL_OUTPUT,
+  isConcurrencySafe: () => false,
+  timeoutMs: 30_000,
+  execute: async (args, exec) => {
+    const action = typeof args?.action === 'string' ? args.action : 'list'
+    const ctx = exec?.ctx ?? _ctx
+    const before = loadCollections()
+    let next = before
+    let detail = {}
+    if (action === 'create') {
+      const created = createCollection(before, args?.name, args?.workspaceIds)
+      next = created.collections
+      detail = { collection: created.collection }
+    } else if (action === 'rename') {
+      const result = renameCollection(before, args?.id, args?.name)
+      next = result.collections
+      detail = { changed: result.changed }
+    } else if (action === 'delete') {
+      const result = deleteCollection(before, args?.id)
+      next = result.collections
+      detail = { removed: result.removed }
+    } else if (action === 'setMembers') {
+      const result = setMembers(before, args?.id, args?.workspaceIds)
+      next = result.collections
+      detail = { changed: result.changed }
+    } else if (action === 'toggleMember') {
+      const result = toggleMember(before, args?.id, args?.workspaceId)
+      next = result.collections
+      detail = { added: result.added, changed: result.changed }
+    } else if (action !== 'list') {
+      return { ok: false, error: `未知 action: ${String(action)}` }
+    }
+    if (action !== 'list') saveCollections(next)
+    return {
+      ok: true,
+      action,
+      ...detail,
+      collections: loadCollections(),
+      workspaces: buildWorkspaceView(ctx).map((workspace) => ({
+        id: workspace.id,
+        title: workspace.title,
+        path: workspace.path,
+        sessionCount: workspace.sessionCount,
+      })),
+    }
+  },
+}
+
 // ── 用户指令 ────────────────────────────────────────────────────────────────
 
 const COMMAND_DEFINITION = {
   name: 'folders',
   description: '更好的 DSH 文件夹：整理 / 预览 / 还原工作区分组',
-  input: { hint: 'status | plan | organize | unmerge' },
+  input: { hint: 'status | plan | organize | unmerge | tables' },
   handler: async (invocation) => {
     const raw = String(invocation?.rawInput ?? '').trim().toLowerCase()
     const config = loadConfig()
@@ -460,6 +709,81 @@ const COMMAND_DEFINITION = {
           result.autoOrganizeDisabled ? '已同时关闭「自动整理」，避免刚还原就被自动重建。需要时可在设置里重新打开。' : '',
         ].filter(Boolean).join('\n'),
       }
+    }
+
+    if (raw === 'tables' || raw.startsWith('tables ')) {
+      const argv = raw.split(/\s+/).slice(1)
+      const verb = argv[0] ?? 'list'
+      const collections = loadCollections()
+      const workspaces = buildWorkspaceView(ctx)
+
+      /** 表名或 id 都能定位（名字优先，其次前缀匹配 id）。 */
+      const findCollection = (token) => {
+        if (typeof token !== 'string' || token.length === 0) return undefined
+        return collections.find((entry) => entry.name === token)
+          ?? collections.find((entry) => entry.id === token)
+          ?? collections.find((entry) => entry.id.startsWith(token))
+      }
+
+      /** 工作区 id / 路径片段都能定位。 */
+      const findWorkspace = (token) => {
+        if (typeof token !== 'string' || token.length === 0) return undefined
+        return workspaces.find((workspace) => workspace.id === token)
+          ?? workspaces.find((workspace) => workspace.path.includes(token))
+          ?? workspaces.find((workspace) => workspace.title === token)
+      }
+
+      const render = () => {
+        const current = loadCollections()
+        const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]))
+        if (current.length === 0) return '还没有建过表。用 `/folders tables new <名字>` 建一个。'
+        return current.map((collection) => {
+          const members = collection.workspaceIds.map((id) => {
+            const workspace = byId.get(id)
+            return workspace === undefined
+              ? `   · ${id}（已不在工作区列表里）`
+              : `   · ${workspace.title} — ${workspace.path}`
+          })
+          return [`📋 ${collection.name}  [${collection.id}]`, ...members].join('\n')
+        }).join('\n\n')
+      }
+
+      if (verb === 'new' || verb === 'create') {
+        const name = argv.slice(1).join(' ')
+        if (name.length === 0) return { kind: 'success', text: '用法：/folders tables new <名字>' }
+        const created = createCollection(collections, name)
+        saveCollections(created.collections)
+        return { kind: 'success', text: `已建表「${created.collection.name}」[${created.collection.id}]。\n用 /folders tables add ${created.collection.name} <工作区路径片段> 往里加工作区。` }
+      }
+      if (verb === 'delete' || verb === 'rm') {
+        const target = findCollection(argv.slice(1).join(' '))
+        if (target === undefined) return { kind: 'success', text: '没找到这个表。先 /folders tables 看看有哪些。' }
+        const result = deleteCollection(collections, target.id)
+        saveCollections(result.collections)
+        return { kind: 'success', text: `已删表「${target.name}」。表只是集合，工作区、目录、会话都没动。` }
+      }
+      if (verb === 'rename') {
+        const target = findCollection(argv[1] ?? '')
+        const name = argv.slice(2).join(' ')
+        if (target === undefined || name.length === 0) return { kind: 'success', text: '用法：/folders tables rename <表名或id> <新名字>' }
+        const result = renameCollection(collections, target.id, name)
+        saveCollections(result.collections)
+        return { kind: 'success', text: `已改名为「${name}」。` }
+      }
+      if (verb === 'add' || verb === 'remove') {
+        const target = findCollection(argv[1] ?? '')
+        const workspace = findWorkspace(argv.slice(2).join(' '))
+        if (target === undefined || workspace === undefined) {
+          return { kind: 'success', text: '用法：/folders tables add|remove <表名或id> <工作区路径片段或id>' }
+        }
+        const has = target.workspaceIds.includes(workspace.id)
+        const want = verb === 'add'
+        if (has === want) return { kind: 'success', text: `「${workspace.title}」${want ? '已经' : '本来就不'}在「${target.name}」里。` }
+        const result = toggleMember(collections, target.id, workspace.id)
+        saveCollections(result.collections)
+        return { kind: 'success', text: `已${want ? '加入' : '移出'}「${target.name}」：${workspace.title}` }
+      }
+      return { kind: 'success', text: `${render()}\n\n用法：tables · new <名字> · rename <表> <新名> · delete <表> · add|remove <表> <工作区>` }
     }
 
     if (raw === 'plan') {
@@ -556,6 +880,7 @@ async function registerSettings(ctx) {
  */
 export function apply(ctx) {
   _organizer = buildOrganizer(ctx)
+  _ctx = ctx
   _scope = null
   _lastRun = { at: 0, ok: true, error: '', created: 0, failed: 0 }
 
@@ -608,6 +933,10 @@ export function apply(ctx) {
     scopedCtx.effect(
       () => scopedCtx.tools.register(TOOL_DEFINITION),
       'better-folders: organize tool',
+    )
+    scopedCtx.effect(
+      () => scopedCtx.tools.register(COLLECTIONS_TOOL),
+      'better-folders: tables tool',
     )
   })
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 — 2026-10-01
+
+* **新增「表」——用户自定义的工作区集合**。和 0.1.x 的「按上级目录汇合」互补：
+  那个由磁盘层级决定，这个由你自由指定。表**不落地成任何目录**：只记录工作区 id 的
+  集合，不创建文件、不改 cwd、不碰会话历史；同一个工作区可同时属于多个表，删表不删东西。
+  - Host：`~/.dsh/better-folders/collections.json` + `/better-folders/api/collections`
+    （create / rename / delete / setMembers / toggleMember）
+  - Agent 工具 `manage_workspace_tables`
+  - 指令 `/folders tables [new|rename|delete|add|remove]`
+  - 面板里列到**会话级**：点工作区打开工作区，点会话直接跳会话
+* **把入口搬进「工作区」标题行**（用户指定）。那一行没有对外槽位（搜索/视图选项/
+  添加工作区都是官方组件内部写死的），因此采用**只读测量 + 浮层贴合**：读取
+  `[class*="sectionHeader"]` 的位置，把两个图标按钮浮在它左边，**不修改官方 DOM**，
+  不会和 React 协调打架。图标来自官方组件库
+  `@deepseek-ai/dsh-client-ui-primitives`（Module Loader 车道的隐式外部依赖），
+  尺寸/圆角/悬停全部对齐原生 `searchButton`。定位失败时自动退回底部按钮。
+
 ## 0.1.2 — 2026-10-01
 
 * **修复视图校准静默失效（0.1.1 的真凶）**：客户端插件的 Context 只暴露 `inject`
