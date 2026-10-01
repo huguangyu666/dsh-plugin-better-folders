@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.1.2";
+const BUNDLE_VERSION = "0.2.0";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -39,7 +39,13 @@ const BUNDLE_VERSION = "0.1.2";
  * @returns {{hasCtx:boolean,hasUiWorkspace:boolean,hasView:boolean,hasSetGroupBy:boolean}} 探测结果。
  */
 function probeCapabilities() {
-  const result = { hasCtx: Boolean(_ctx), hasUiWorkspace: false, hasView: false, hasSetGroupBy: false };
+  const result = {
+    hasCtx: Boolean(_ctx),
+    hasUiWorkspace: false,
+    hasView: false,
+    hasSetGroupBy: false,
+    hasPrimitives: primitives !== null,
+  };
   try {
     result.hasUiWorkspace = Boolean(_ctx && _ctx.uiWorkspace);
   } catch {
@@ -567,9 +573,20 @@ function useHeaderAnchor() {
   const [anchor, setAnchor] = useState({ rect: null, searchLeft: null });
   useEffect(() => {
     let alive = true;
+    let lastFound = null;
     const measure = () => {
       if (!alive) return;
       const found = findWorkspaceHeader();
+      // 只在「找到 / 找不到」翻转时上报一次，避免每 600ms 刷屏。
+      if ((found !== null) !== lastFound) {
+        lastFound = found !== null;
+        reportDiag({
+          stage: "header",
+          found: lastFound,
+          hasPrimitives: primitives !== null,
+          matched: document.querySelectorAll('[class*="sectionHeader"]').length,
+        });
+      }
       if (found === null) {
         setAnchor((current) => (current.rect === null ? current : { rect: null, searchLeft: null }));
         return;
