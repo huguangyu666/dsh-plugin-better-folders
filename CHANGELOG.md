@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.1 — 2026-10-01
+
+* **修复「＋」点了没反应（真 bug）**：新建表 / 改名用的是 `window.prompt`，而
+  **Electron 渲染进程不支持 `prompt()`，调用会直接抛错** —— 所以整个面板看起来是死的。
+  `window.confirm` 虽可用但会阻塞渲染进程，也一并换掉。
+  现在新建 / 改名 / 删除确认全部是**面板内联的输入行与确认行**（Enter 提交、Esc 取消）。
+* **修复主题不同步**：面板此前用的是从别的插件抄来的 token
+  （`--dsw-alias-bg-module-platform` 等），这些名字**不在官方主题 token 表里**，
+  于是全部落到硬编码的深色兜底上 —— 在浅色主题下那个面板就是一块黑。现在改用官方
+  真实 token：`--dsw-alias-bg-overlay`（官方描述就是「Overlay and popover background」）、
+  `--dsw-alias-bg-layer-2`、`--dsw-alias-border-l2`、`--dsw-alias-brand-primary`、
+  `--dsw-alias-interactive-bg-hover`、`--dsw-alias-state-error-primary`，
+  并且**不再留深色兜底**。
+* 按钮改用官方 `Button` 组件（`{ variant, size, icon }`），拿不到时退化为同样用官方
+  token 的原生按钮。
+
 ## 0.2.0 — 2026-10-01
 
 * **新增「表」——用户自定义的工作区集合**。和 0.1.x 的「按上级目录汇合」互补：

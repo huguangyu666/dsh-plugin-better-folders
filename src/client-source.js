@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.2.0";
+const BUNDLE_VERSION = "0.2.1";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -237,13 +237,13 @@ const styles = {
   lead: { color: DSW("label-secondary"), fontSize: "12.5px", lineHeight: 1.6, marginBottom: "14px" },
   statRow: { display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "14px" },
   stat: {
-    background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    background: DSW("bg-layer-2"), border: `1px solid ${DSW("border-l2")}`,
     borderRadius: "10px", padding: "10px 14px", minWidth: "104px",
   },
   statNum: { fontSize: "20px", fontWeight: 600, color: DSW("label-primary") },
   statLabel: { fontSize: "11.5px", color: DSW("label-tertiary"), marginTop: "2px" },
   box: {
-    background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    background: DSW("bg-layer-2"), border: `1px solid ${DSW("border-l2")}`,
     borderRadius: "10px", padding: "12px 14px", marginBottom: "12px",
   },
   boxTitle: { color: DSW("label-secondary"), fontSize: "12.5px", fontWeight: 600, marginBottom: "8px" },
@@ -253,7 +253,7 @@ const styles = {
   numRow: { display: "flex", alignItems: "center", gap: "10px", margin: "9px 0" },
   numLabel: { color: DSW("label-secondary"), width: "190px", flex: "none", fontSize: "12.5px" },
   input: {
-    width: "76px", background: DSW("bg-module-platform"), border: `1px solid ${DSW("border-l2")}`,
+    width: "76px", background: DSW("bg-layer-2"), border: `1px solid ${DSW("border-l2")}`,
     color: DSW("label-primary"), borderRadius: "8px", padding: "6px 9px", fontSize: "13px", outline: "none",
   },
   btn: {
@@ -467,7 +467,7 @@ function BetterFoldersPanel() {
 
     React.createElement("div", null,
       React.createElement("button", {
-        style: { ...styles.btn, background: DSW("button-info-fill") },
+        style: { ...styles.btn, background: DSW("brand-primary") },
         disabled: busy !== "", onClick: () => void run("apply"),
       }, busy === "apply" ? "整理中…" : "一键整理"),
       React.createElement("button", {
@@ -533,9 +533,9 @@ const HEADER_ICON_BUTTON = {
 
 /** 注入一次悬停样式（官方按钮靠 CSS module，这里用等价的最小样式补齐）。 */
 const HEADER_CSS = `
-.bf-icon-btn:hover{background:var(--dsw-alias-bg-module-platform,#8882);}
-.bf-icon-btn[data-active="true"]{background:var(--dsw-alias-bg-module-platform,#8882);color:var(--dsw-alias-label-primary);}
-.bf-row:hover{background:var(--dsw-alias-bg-module-platform,#8882);}
+.bf-icon-btn:hover{background:var(--dsw-alias-interactive-bg-hover);}
+.bf-icon-btn[data-active="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}
+.bf-row:hover{background:var(--dsw-alias-interactive-bg-hover);}
 `;
 
 // ── 定位「工作区」标题行 ────────────────────────────────────────────────────
@@ -627,13 +627,60 @@ const PANEL_STYLE = {
   width: "340px",
   maxHeight: "60vh",
   overflow: "auto",
-  background: "var(--dsw-alias-bg-module-platform, #1c1c1e)",
-  border: "1px solid var(--dsw-alias-border-l2, #ffffff22)",
+  // 只用官方真实存在的 token，且**不留深色兜底** —— 否则浅色主题下会变成一块黑。
+  background: "var(--dsw-alias-bg-overlay)",
+  border: "1px solid var(--dsw-alias-border-l2)",
   borderRadius: "var(--dsw-radius-md, 10px)",
-  boxShadow: "0 12px 32px rgba(0,0,0,.35)",
+  boxShadow: "var(--dsw-shadow-popover, 0 12px 32px rgba(0,0,0,.18))",
   padding: "10px",
   fontSize: "12.5px",
-  color: "var(--dsw-alias-label-primary, #fff)",
+  color: "var(--dsw-alias-label-primary)",
+};
+
+/** 次要文字色（官方侧边栏标题行用的就是它）。 */
+const LABEL_TERTIARY = "var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary))";
+/** 危险动作色。 */
+const STATE_ERROR = "var(--dsw-alias-state-error-primary)";
+
+/**
+ * 官方 Button 优先，缺失时退化为同样用官方 token 的原生按钮。
+ * @param {{variant?: string, size?: string, onClick?: Function, disabled?: boolean, title?: string, children: any}} props 属性。
+ * @returns {object} React 元素。
+ */
+function UiButton({ variant = "ghost", size = "sm", onClick, disabled, title, children }) {
+  const Official = primitives?.Button;
+  if (typeof Official === "function") {
+    return React.createElement(Official, { variant, size, onClick, disabled, title }, children);
+  }
+  return React.createElement("button", {
+    type: "button",
+    onClick,
+    disabled,
+    title,
+    style: {
+      border: variant === "primary" ? "none" : "1px solid var(--dsw-alias-border-l2)",
+      background: variant === "primary" ? "var(--dsw-alias-brand-primary)" : "transparent",
+      color: variant === "primary" ? "#fff" : "var(--dsw-alias-label-secondary)",
+      borderRadius: "var(--dsw-radius-sm, 6px)",
+      padding: size === "sm" ? "3px 10px" : "6px 14px",
+      fontSize: "12px",
+      cursor: disabled ? "default" : "pointer",
+      opacity: disabled ? 0.5 : 1,
+    },
+  }, children);
+}
+
+/** 面板内的文本输入框（官方没有导出可直接用的受控输入，这里对齐 token）。 */
+const PANEL_INPUT_STYLE = {
+  flex: 1,
+  minWidth: 0,
+  background: "var(--dsw-alias-bg-layer-2)",
+  border: "1px solid var(--dsw-alias-border-l2)",
+  borderRadius: "var(--dsw-radius-sm, 6px)",
+  color: "var(--dsw-alias-label-primary)",
+  padding: "5px 8px",
+  fontSize: "12.5px",
+  outline: "none",
 };
 
 function Chip({ active, children, onClick, title }) {
@@ -642,9 +689,9 @@ function Chip({ active, children, onClick, title }) {
     onClick,
     title,
     style: {
-      border: "1px solid var(--dsw-alias-border-l2, #ffffff22)",
-      background: active ? "var(--dsw-alias-button-info-fill, #1f6feb)" : "transparent",
-      color: active ? "#fff" : "var(--dsw-alias-label-secondary, #bbb)",
+      border: "1px solid var(--dsw-alias-border-l2)",
+      background: active ? "var(--dsw-alias-brand-primary)" : "transparent",
+      color: active ? "#fff" : "var(--dsw-alias-label-secondary)",
       borderRadius: "999px",
       padding: "3px 10px",
       fontSize: "12px",
@@ -666,6 +713,10 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
   const [manage, setManage] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [note, setNote] = useState("");
+  // 面板内联编辑：Electron 里 window.prompt 不可用（直接抛错），window.confirm 又会阻塞，
+  // 所以新建 / 改名 / 删除确认全部做成面板内的输入行与确认行。
+  const [editor, setEditor] = useState(null); // { mode: "new" | "rename", value: string } | null
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const refresh = useCallback(async (keepActive = true) => {
     try {
@@ -716,6 +767,21 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
     }
   };
 
+  /** 提交内联编辑器（新建 / 改名）。 */
+  const submitEditor = async () => {
+    if (editor === null) return;
+    const name = editor.value.trim();
+    if (name.length === 0) {
+      setNote("名字不能为空");
+      return;
+    }
+    const mode = editor.mode;
+    const targetId = activeId;
+    setEditor(null);
+    if (mode === "new") await run("create", { name });
+    else if (targetId !== null) await run("rename", { id: targetId, name });
+  };
+
   return React.createElement(React.Fragment, null,
     // 点击外部关闭
     React.createElement("div", {
@@ -740,47 +806,67 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
         type: "button",
         title: "新建表",
         style: { ...HEADER_ICON_BUTTON, width: "22px", height: "22px" },
-        onClick: () => {
-          const name = window.prompt("新表的名字", "新表");
-          if (name !== null && name.trim().length > 0) void run("create", { name });
-        },
+        onClick: () => { setConfirmDelete(false); setEditor({ mode: "new", value: "" }); },
       }, iconOr("IconAddOutlineRegular", "+", 13)),
+    ),
+
+    // 新建 / 改名：面板内联输入（不用 window.prompt —— Electron 不支持，会直接抛错）
+    editor !== null && React.createElement("div", {
+      style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "8px" },
+    },
+      React.createElement("input", {
+        autoFocus: true,
+        style: PANEL_INPUT_STYLE,
+        placeholder: editor.mode === "new" ? "新表的名字" : "新的表名",
+        value: editor.value,
+        onChange: (event) => setEditor({ mode: editor.mode, value: event.target.value }),
+        onKeyDown: (event) => {
+          if (event.key === "Enter") void submitEditor();
+          if (event.key === "Escape") setEditor(null);
+        },
+      }),
+      React.createElement(UiButton, { variant: "primary", onClick: () => void submitEditor() }, "确定"),
+      React.createElement(UiButton, { onClick: () => setEditor(null) }, "取消"),
+    ),
+
+    // 删除确认：面板内联（window.confirm 会阻塞整个渲染进程）
+    confirmDelete && active !== null && React.createElement("div", {
+      style: { display: "flex", gap: "6px", alignItems: "center", marginTop: "8px" },
+    },
+      React.createElement("span", { style: { flex: 1, color: STATE_ERROR, lineHeight: 1.5 } },
+        `删除表「${active.name}」？工作区、目录、会话都不会动。`),
+      React.createElement(UiButton, { variant: "primary", onClick: () => { setConfirmDelete(false); void run("delete", { id: active.id }); } }, "删除"),
+      React.createElement(UiButton, { onClick: () => setConfirmDelete(false) }, "取消"),
     ),
 
     // 工具栏
     React.createElement("div", {
-      style: { display: "flex", gap: "6px", alignItems: "center", margin: "8px 0 6px", color: "var(--dsw-alias-label-tertiary, #888)" },
+      style: { display: "flex", gap: "6px", alignItems: "center", margin: "8px 0 6px", color: LABEL_TERTIARY },
     },
-      React.createElement("span", null, active === null ? "还没有表" : `${active.name} · ${active.workspaceIds.length} 个工作区`),
+      React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+        active === null ? "还没有表" : `${active.name} · ${active.workspaceIds.length} 个工作区`),
       React.createElement("span", { style: { flex: 1 } }),
       active !== null && React.createElement(Chip, {
         active: manage,
-        onClick: () => setManage((value) => !value),
+        onClick: () => { setEditor(null); setConfirmDelete(false); setManage((value) => !value); },
         title: manage ? "回到切换视图" : "编辑这个表的成员",
       }, manage ? "完成" : "编辑"),
       active !== null && manage && React.createElement(Chip, {
         active: false,
         title: "重命名这个表",
-        onClick: () => {
-          const name = window.prompt("新的表名", active.name);
-          if (name !== null && name.trim().length > 0) void run("rename", { id: active.id, name });
-        },
+        onClick: () => { setConfirmDelete(false); setEditor({ mode: "rename", value: active.name }); },
       }, "改名"),
       active !== null && manage && React.createElement(Chip, {
         active: false,
         title: "删除这个表（不删任何工作区/目录/会话）",
-        onClick: () => {
-          if (window.confirm(`删除表「${active.name}」？表只是集合，工作区、目录、会话都不会动。`)) {
-            void run("delete", { id: active.id });
-          }
-        },
+        onClick: () => { setEditor(null); setConfirmDelete(true); },
       }, "删除"),
     ),
 
     // 工作区 / 会话列表
     React.createElement("div", null,
       shown.length === 0
-        ? React.createElement("div", { style: { color: "var(--dsw-alias-label-tertiary, #888)", padding: "10px 2px", lineHeight: 1.6 } },
+        ? React.createElement("div", { style: { color: "var(--dsw-alias-label-tertiary)", padding: "10px 2px", lineHeight: 1.6 } },
           active === null
             ? "点上面的「＋」建一个表，再点「编辑」把工作区加进来。"
             : (manage ? "这个表还没有成员，勾选下面的工作区加入。" : "这个表还没有成员。点「编辑」加入工作区。"))
@@ -803,7 +889,7 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
                 title: workspace.path,
                 style: { flex: 1, cursor: manage ? "default" : "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
               }, workspace.title || workspace.path),
-              React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary, #888)", flex: "none" } },
+              React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", flex: "none" } },
                 `${workspace.sessionCount} 会话`),
               !manage && workspace.sessions.length > 0 && React.createElement("button", {
                 type: "button",
@@ -822,7 +908,7 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
                   padding: "4px 6px",
                   borderRadius: "var(--dsw-radius-sm, 6px)",
                   cursor: "pointer",
-                  color: session.title ? "inherit" : "var(--dsw-alias-label-tertiary, #888)",
+                  color: session.title ? "inherit" : "var(--dsw-alias-label-tertiary)",
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 },
               }, session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）"))),
@@ -831,8 +917,8 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
         }),
     ),
 
-    note ? React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-secondary, #bbb)" } }, note) : null,
-    React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-tertiary, #888)", lineHeight: 1.6 } },
+    note ? React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-secondary)" } }, note) : null,
+    React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.6 } },
       "表只是工作区的集合视图，不创建目录、不改工作目录、不碰会话历史。"),
     ),
   );
@@ -907,7 +993,7 @@ function WorkspaceHeaderActions() {
         alignItems: "center",
         gap: `${gap}px`,
         zIndex: 58,
-        color: "var(--dsw-alias-label-tertiary, #888)",
+        color: "var(--dsw-alias-label-tertiary)",
       },
     },
     React.createElement("button", {
