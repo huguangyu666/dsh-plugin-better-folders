@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.2.1";
+const BUNDLE_VERSION = "0.2.2";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -536,6 +536,7 @@ const HEADER_CSS = `
 .bf-icon-btn:hover{background:var(--dsw-alias-interactive-bg-hover);}
 .bf-icon-btn[data-active="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}
 .bf-row:hover{background:var(--dsw-alias-interactive-bg-hover);}
+.bf-input::placeholder{color:var(--dsw-alias-label-tertiary);}
 `;
 
 // ── 定位「工作区」标题行 ────────────────────────────────────────────────────
@@ -674,7 +675,8 @@ function UiButton({ variant = "ghost", size = "sm", onClick, disabled, title, ch
 const PANEL_INPUT_STYLE = {
   flex: 1,
   minWidth: 0,
-  background: "var(--dsw-alias-bg-layer-2)",
+  // 透明底 + 描边：不依赖具体主题的层级色，明暗都不会出现"白底白字"。
+  background: "transparent",
   border: "1px solid var(--dsw-alias-border-l2)",
   borderRadius: "var(--dsw-radius-sm, 6px)",
   color: "var(--dsw-alias-label-primary)",
@@ -683,15 +685,28 @@ const PANEL_INPUT_STYLE = {
   outline: "none",
 };
 
+/**
+ * 选中态胶囊。
+ *
+ * 优先用官方 `Pill({ active, children, onClick })` —— 它自带 pill / active / interactive
+ * 样式，明暗主题都是对的。之前手搓的版本用 `--dsw-alias-brand-primary` 当选中底再写死
+ * `#fff` 文字，而该主题下 brand-primary 本身就是浅色 → **白底白字，文字完全看不见**。
+ * @param {{active?: boolean, children: any, onClick?: Function, title?: string}} props 属性。
+ * @returns {object} React 元素。
+ */
 function Chip({ active, children, onClick, title }) {
+  const OfficialPill = primitives?.Pill;
+  if (typeof OfficialPill === "function") {
+    return React.createElement(OfficialPill, { active, onClick, title }, children);
+  }
   return React.createElement("button", {
     type: "button",
     onClick,
     title,
     style: {
       border: "1px solid var(--dsw-alias-border-l2)",
-      background: active ? "var(--dsw-alias-brand-primary)" : "transparent",
-      color: active ? "#fff" : "var(--dsw-alias-label-secondary)",
+      background: active ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+      color: active ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-secondary)",
       borderRadius: "999px",
       padding: "3px 10px",
       fontSize: "12px",
@@ -816,6 +831,7 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
     },
       React.createElement("input", {
         autoFocus: true,
+        className: "bf-input",
         style: PANEL_INPUT_STYLE,
         placeholder: editor.mode === "new" ? "新表的名字" : "新的表名",
         value: editor.value,
