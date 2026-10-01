@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.2.2";
+const BUNDLE_VERSION = "0.2.3";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -622,20 +622,75 @@ async function mutateTables(action, payload) {
 
 // ── 「表」切换面板 ──────────────────────────────────────────────────────────
 
-const PANEL_STYLE = {
+/**
+ * 面板外壳：逐条对齐官方 `MenuSurface.module.css` + `Menu.module.css` 的 `.list`。
+ *
+ * 官方浮层不是"不透明填充"，而是**毛玻璃**：外壳只负责圆角/阴影/隔离，材质由一层
+ * `position:absolute; z-index:-1` 的子层画（背景 `--dsw-menu-surface-fill` +
+ * `backdrop-filter: var(--dsw-menu-backdrop-filter)`），这样内容本身不会被模糊。
+ */
+const PANEL_SURFACE_STYLE = {
   position: "fixed",
   zIndex: 60,
   width: "340px",
   maxHeight: "60vh",
-  overflow: "auto",
-  // 只用官方真实存在的 token，且**不留深色兜底** —— 否则浅色主题下会变成一块黑。
-  background: "var(--dsw-alias-bg-overlay)",
-  border: "1px solid var(--dsw-alias-border-l2)",
-  borderRadius: "var(--dsw-radius-md, 10px)",
-  boxShadow: "var(--dsw-shadow-popover, 0 12px 32px rgba(0,0,0,.18))",
-  padding: "10px",
-  fontSize: "12.5px",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+  borderRadius: "var(--dsw-radius-lg, 12px)",
+  boxShadow: "var(--dsw-elevation-prominent)",
+  isolation: "isolate",
   color: "var(--dsw-alias-label-primary)",
+  fontSize: "13px",
+  lineHeight: "20px",
+};
+
+/** 毛玻璃材质层（官方同款写法）。 */
+const PANEL_MATERIAL_STYLE = {
+  position: "absolute",
+  inset: 0,
+  zIndex: -1,
+  borderRadius: "inherit",
+  background: "var(--dsw-menu-surface-fill)",
+  backdropFilter: "var(--dsw-menu-backdrop-filter)",
+  WebkitBackdropFilter: "var(--dsw-menu-backdrop-filter)",
+  pointerEvents: "none",
+};
+
+/** 内容层：官方菜单卡片的 padding 就是 4px。 */
+const PANEL_CONTENT_STYLE = {
+  padding: "4px",
+  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+};
+
+/** 菜单行：对齐官方 `.item`（min-height 34 / padding 6px 8px / radius-md / 13px）。 */
+const MENU_ITEM_STYLE = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  width: "100%",
+  minHeight: "34px",
+  padding: "6px 8px",
+  border: "none",
+  borderRadius: "var(--dsw-radius-md, 8px)",
+  background: "transparent",
+  cursor: "pointer",
+  fontSize: "13px",
+  lineHeight: "20px",
+  color: "var(--dsw-alias-label-primary)",
+  textAlign: "left",
+  boxSizing: "border-box",
+};
+
+/** 分组小标题：对齐官方 `.label`。 */
+const MENU_LABEL_STYLE = {
+  padding: "6px 8px",
+  fontSize: "11px",
+  lineHeight: "15px",
+  color: "var(--dsw-alias-label-tertiary)",
 };
 
 /** 次要文字色（官方侧边栏标题行用的就是它）。 */
@@ -804,13 +859,16 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
       style: { position: "fixed", inset: 0, zIndex: 59, background: "transparent" },
     }),
     React.createElement("div", {
-      style: { ...PANEL_STYLE, left: `${anchorLeft}px`, top: `${anchorTop}px` },
+      style: { ...PANEL_SURFACE_STYLE, left: `${anchorLeft}px`, top: `${anchorTop}px` },
       onClick: (event) => event.stopPropagation(),
     },
     React.createElement("style", null, HEADER_CSS),
+    // 毛玻璃材质层（在内容之下）
+    React.createElement("div", { style: PANEL_MATERIAL_STYLE }),
+    React.createElement("div", { style: PANEL_CONTENT_STYLE },
 
     // 表选择
-    React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" } },
+    React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", padding: "2px" } },
       collections.map((entry) => React.createElement(Chip, {
         key: entry.id,
         active: entry.id === activeId,
@@ -892,7 +950,7 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
           return React.createElement("div", { key: workspace.id },
             React.createElement("div", {
               className: "bf-row",
-              style: { display: "flex", alignItems: "center", gap: "6px", padding: "6px", borderRadius: "var(--dsw-radius-sm, 6px)" },
+              style: MENU_ITEM_STYLE,
             },
               manage && React.createElement("input", {
                 type: "checkbox",
@@ -914,17 +972,18 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
                 onClick: () => setExpanded((current) => ({ ...current, [workspace.id]: !isOpen })),
               }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 12)),
             ),
-            isOpen && React.createElement("div", { style: { margin: "0 0 4px 24px" } },
+            isOpen && React.createElement("div", null,
               workspace.sessions.map((session) => React.createElement("div", {
                 key: session.id,
                 className: "bf-row",
                 title: session.id,
                 onClick: () => openSession(session.id),
                 style: {
-                  padding: "4px 6px",
-                  borderRadius: "var(--dsw-radius-sm, 6px)",
-                  cursor: "pointer",
-                  color: session.title ? "inherit" : "var(--dsw-alias-label-tertiary)",
+                  ...MENU_ITEM_STYLE,
+                  minHeight: "26px",
+                  paddingLeft: "26px",
+                  fontSize: "12px",
+                  color: session.title ? undefined : "var(--dsw-alias-label-tertiary)",
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 },
               }, session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）"))),
@@ -933,9 +992,10 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
         }),
     ),
 
-    note ? React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-secondary)" } }, note) : null,
-    React.createElement("div", { style: { marginTop: "8px", color: "var(--dsw-alias-label-tertiary)", lineHeight: 1.6 } },
+    note ? React.createElement("div", { style: MENU_LABEL_STYLE }, note) : null,
+    React.createElement("div", { style: { ...MENU_LABEL_STYLE, lineHeight: "1.6" } },
       "表只是工作区的集合视图，不创建目录、不改工作目录、不碰会话历史。"),
+    ),
     ),
   );
 }
