@@ -70,6 +70,61 @@ function switchToTreeView() {
   return writeViewMode(TREE_MODE) ? "reload" : "failed";
 }
 
+/**
+ * 启动时校准视图：只有在 `autoTreeView` 打开、且确实存在（或即将存在）文件夹节点时
+ * 才切到「按工作区树」。没有可汇合的对象时不动用户的视图 —— 否则就是无意义地改偏好。
+ *
+ * 这一步是「整理能不能被看出来」的关键：整理只注册文件夹节点，真正的视觉汇合由内置
+ * 树视图完成；不切视图的话，侧边栏只会平白多出几个条目，反而更乱。
+ * @returns {Promise<void>} 完成后 resolve。
+ */
+async function ensureTreeViewMode() {
+  try {
+    if (readViewMode() === TREE_MODE) return;
+    const data = await api("/status");
+    if (data?.config?.autoTreeView === false) return;
+    const folderish = (data?.mergedCount || 0) + (data?.pendingCount || 0);
+    if (folderish === 0) return;
+    switchToTreeView();
+  } catch {
+    /* 状态读不到就不动视图 */
+  }
+}
+
+/** 重试定时器句柄（模块级，便于卸载时清理）。 */
+let _treeTimer = null;
+
+/**
+ * 等客户端服务就绪后做一次视图校准。
+ * `ctx.uiWorkspace` 由 ui-workspace 客户端插件注册，可能晚于本插件，因此按固定间隔
+ * 重试有限次；拿不到就安静放弃，不阻塞、不报错。
+ * @param {object} ctx 客户端 Context。
+ * @param {number} [tries] 剩余重试次数。
+ * @returns {void}
+ */
+function scheduleTreeViewCheck(ctx, tries = 12) {
+  if (_treeTimer !== null) {
+    clearTimeout(_treeTimer);
+    _treeTimer = null;
+  }
+  let ready = false;
+  try {
+    const actions = ctx?.uiWorkspace?.view;
+    ready = Boolean(actions && typeof actions.setGroupBy === "function");
+  } catch {
+    ready = false;
+  }
+  if (ready) {
+    void ensureTreeViewMode();
+    return;
+  }
+  if (tries <= 0) return;
+  _treeTimer = setTimeout(() => {
+    _treeTimer = null;
+    scheduleTreeViewCheck(ctx, tries - 1);
+  }, 700);
+}
+
 // ── Host API ────────────────────────────────────────────────────────────────
 
 async function api(path, options) {
@@ -388,6 +443,18 @@ function apply(ctx) {
       { name: "sidebar.footer.action", id: "better-folders", order: 60 },
       SidebarQuickButton,
     ));
+
+  // 启动后校准一次视图：整理建出的文件夹节点要靠内置「按工作区树」才看得出来。
+  ctx.effect(() => {
+    const kick = setTimeout(() => scheduleTreeViewCheck(ctx), 900);
+    return () => {
+      clearTimeout(kick);
+      if (_treeTimer !== null) {
+        clearTimeout(_treeTimer);
+        _treeTimer = null;
+      }
+    };
+  }, "better-folders: tree view enforcement");
 }
 
 module.exports = { name, inject, apply };

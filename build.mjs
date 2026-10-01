@@ -62,6 +62,7 @@ const checks = [
   [client.includes('__ModuleLoader__.load'), 'client bundle 缺 ModuleLoader 包装'],
   [client.includes('settings.section'), 'client bundle 缺 settings.section 注册'],
   [client.includes('dsh.workspace.view.v5'), 'client bundle 缺视图切换逻辑'],
+  [client.includes('ensureTreeViewMode'), 'client bundle 缺启动视图校准'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)
