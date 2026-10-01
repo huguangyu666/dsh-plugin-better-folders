@@ -197,6 +197,31 @@ function buildOrganizer(ctx) {
 }
 
 /**
+ * 记录一条来自客户端半的诊断快照。
+ *
+ * 客户端插件跑在浏览器沙箱里，宿主看不到它的任何输出；「点了没反应」这类问题
+ * 只能靠回传证据来定位。写到 `~/.dsh/better-folders/diag.json`，保留最近 20 条。
+ *
+ * @param {object} entry 客户端上报的诊断对象。
+ * @returns {void}
+ */
+function writeDiag(entry) {
+  try {
+    const file = path.join(path.dirname(stateFile()), 'diag.json')
+    let history = []
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+      if (Array.isArray(parsed?.history)) history = parsed.history
+    } catch { /* 首次写入或文件损坏 */ }
+    history.push({ ...entry, receivedAt: new Date().toISOString() })
+    if (history.length > 20) history = history.slice(-20)
+    fs.writeFileSync(file, JSON.stringify({ history }, null, 2), 'utf8')
+  } catch (error) {
+    log('诊断写入失败:', error?.message ?? error)
+  }
+}
+
+/**
  * 还原，并顺手关掉自动整理。
  *
  * 还原会删除文件夹节点，而删除本身又会触发 `domain/changed` —— 如果自动整理还开着，
@@ -314,6 +339,12 @@ async function handleApi(ctx, req, res) {
   const method = req.method ?? 'GET'
 
   try {
+    if (route === '/diag' && method === 'POST') {
+      const body = await readBody(req)
+      writeDiag(body)
+      sendJson(res, 200, { ok: true })
+      return
+    }
     if (route === '/status' && method === 'GET') {
       sendJson(res, 200, { ..._organizer.status(), lastRun: _lastRun })
       return

@@ -25,6 +25,69 @@ const TREE_MODE = "workspace-tree";
 
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
+/** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
+const BUNDLE_VERSION = "0.1.2";
+
+// ── 诊断上报 ────────────────────────────────────────────────────────────────
+//
+// 客户端插件运行在浏览器沙箱里，出问题时宿主看不到任何东西。这里把「能力探测结果」
+// 回传给宿主，宿主落到 ~/.dsh/better-folders/diag.json —— 排查「点了没反应」时
+// 不用让用户开 DevTools。
+
+/**
+ * 探测当前客户端 Context 的能力边界。
+ * @returns {{hasCtx:boolean,hasUiWorkspace:boolean,hasView:boolean,hasSetGroupBy:boolean}} 探测结果。
+ */
+function probeCapabilities() {
+  const result = { hasCtx: Boolean(_ctx), hasUiWorkspace: false, hasView: false, hasSetGroupBy: false };
+  try {
+    result.hasUiWorkspace = Boolean(_ctx && _ctx.uiWorkspace);
+  } catch {
+    result.hasUiWorkspace = false;
+  }
+  try {
+    result.hasView = Boolean(_ctx && _ctx.uiWorkspace && _ctx.uiWorkspace.view);
+  } catch {
+    result.hasView = false;
+  }
+  try {
+    result.hasSetGroupBy = typeof _ctx?.uiWorkspace?.view?.setGroupBy === "function";
+  } catch {
+    result.hasSetGroupBy = false;
+  }
+  return result;
+}
+
+/**
+ * 把一次诊断快照回传给宿主。
+ * @param {object} [extra] 附加上下文（阶段名、切换结果等）。
+ * @returns {void}
+ */
+function reportDiag(extra) {
+  const payload = {
+    version: BUNDLE_VERSION,
+    at: new Date().toISOString(),
+    origin: (() => {
+      try {
+        return String(globalThis.location?.origin || globalThis.location?.protocol || "?");
+      } catch {
+        return "?";
+      }
+    })(),
+    viewMode: readViewMode(),
+    ...probeCapabilities(),
+    ...(extra || {}),
+  };
+  try {
+    void fetch("/better-folders/api/diag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch {
+    /* 诊断失败绝不影响功能 */
+  }
+}
 
 // ── 侧边栏视图切换 ──────────────────────────────────────────────────────────
 
@@ -55,19 +118,28 @@ function writeViewMode(mode) {
 
 /**
  * 把侧边栏切到「按工作区树」。
+ *
+ * 优先调用 ui-workspace 客户端服务里的视图写入口 `ctx.uiWorkspace.view.setGroupBy()`
+ * （立即生效，并会同步落到 localStorage）；拿不到服务时退化为直接改写持久化值，
+ * 下一次页面加载生效。
+ *
  * @returns {'live' | 'reload' | 'failed'} live=已即时切换；reload=需刷新；failed=失败。
  */
 function switchToTreeView() {
-  try {
-    const actions = _ctx?.uiWorkspace?.view;
-    if (actions && typeof actions.setGroupBy === "function") {
-      actions.setGroupBy(TREE_MODE);
-      return "live";
+  const probe = probeCapabilities();
+  if (probe.hasSetGroupBy) {
+    try {
+      _ctx.uiWorkspace.view.setGroupBy(TREE_MODE);
+      const ok = readViewMode() === TREE_MODE;
+      reportDiag({ stage: "switch", path: "service", result: ok ? "live" : "service-no-effect" });
+      return ok ? "live" : (writeViewMode(TREE_MODE) ? "reload" : "failed");
+    } catch (error) {
+      reportDiag({ stage: "switch", path: "service", result: "threw", error: String(error?.message ?? error) });
     }
-  } catch {
-    /* 客户端服务不可用时走兜底 */
   }
-  return writeViewMode(TREE_MODE) ? "reload" : "failed";
+  const fallback = writeViewMode(TREE_MODE);
+  reportDiag({ stage: "switch", path: "localStorage", result: fallback ? "reload" : "failed" });
+  return fallback ? "reload" : "failed";
 }
 
 /**
@@ -80,14 +152,24 @@ function switchToTreeView() {
  */
 async function ensureTreeViewMode() {
   try {
-    if (readViewMode() === TREE_MODE) return;
+    if (readViewMode() === TREE_MODE) {
+      reportDiag({ stage: "boot", result: "already-tree" });
+      return;
+    }
     const data = await api("/status");
-    if (data?.config?.autoTreeView === false) return;
+    if (data?.config?.autoTreeView === false) {
+      reportDiag({ stage: "boot", result: "autoTreeView-off" });
+      return;
+    }
     const folderish = (data?.mergedCount || 0) + (data?.pendingCount || 0);
-    if (folderish === 0) return;
-    switchToTreeView();
-  } catch {
-    /* 状态读不到就不动视图 */
+    if (folderish === 0) {
+      reportDiag({ stage: "boot", result: "no-folder-node" });
+      return;
+    }
+    const outcome = switchToTreeView();
+    reportDiag({ stage: "boot", result: outcome, folderish });
+  } catch (error) {
+    reportDiag({ stage: "boot", result: "status-failed", error: String(error?.message ?? error) });
   }
 }
 
@@ -118,7 +200,11 @@ function scheduleTreeViewCheck(ctx, tries = 12) {
     void ensureTreeViewMode();
     return;
   }
-  if (tries <= 0) return;
+  if (tries <= 0) {
+    // 一直拿不到视图写入口 —— 这是「整理看不出效果」的头号原因，必须留下证据。
+    reportDiag({ stage: "boot", result: "view-service-unreachable" });
+    return;
+  }
   _treeTimer = setTimeout(() => {
     _treeTimer = null;
     scheduleTreeViewCheck(ctx, tries - 1);
@@ -394,40 +480,58 @@ function BetterFoldersPanel() {
 
 function SidebarQuickButton() {
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
 
   const onClick = async () => {
     if (busy) return;
     setBusy(true);
+    setNote("");
     try {
       const data = await api("/apply", { method: "POST", body: {} });
-      if (data?.config?.autoTreeView !== false) switchToTreeView();
-      if (data?.createdCount > 0) {
-        console.log(`[better-folders] 已新建 ${data.createdCount} 个文件夹节点`);
-      }
+      const created = data?.createdCount || 0;
+      let outcome = "skipped";
+      if (data?.config?.autoTreeView !== false) outcome = switchToTreeView();
+      reportDiag({ stage: "click", result: outcome, created, viewModeAfter: readViewMode() });
+      // 必须给出可见反馈：整理本身常常「无事可做」（节点已存在），
+      // 若一声不吭，用户只会觉得按钮坏了。
+      if (outcome === "live") setNote(created > 0 ? `已新建 ${created} 个节点，已切到树视图` : "已是最新，已切到树视图");
+      else if (outcome === "reload") setNote("已记录视图偏好，请刷新页面（F5）生效");
+      else if (created > 0) setNote(`已新建 ${created} 个文件夹节点`);
+      else setNote("已是最新，无需整理");
     } catch (error) {
-      console.warn("[better-folders] 整理失败:", error.message);
+      reportDiag({ stage: "click", result: "api-failed", error: String(error?.message ?? error) });
+      setNote(`失败：${error.message}`);
     } finally {
       setBusy(false);
     }
   };
 
+  const label = busy ? "整理中…" : (note || "整理文件夹");
+
   return React.createElement("button", {
     onClick,
     disabled: busy,
-    title: "更好的 DSH 文件夹：把同一上级目录下的工作区汇合到一起",
+    title: note
+      ? `更好的 DSH 文件夹：${note}`
+      : "更好的 DSH 文件夹：把同一上级目录下的工作区汇合到一起",
     style: {
       display: "flex", alignItems: "center", gap: "6px",
       background: "transparent", border: `1px solid ${DSW("border-l2")}`,
-      color: DSW("label-secondary"), borderRadius: "6px", cursor: "pointer",
-      padding: "6px 10px", fontSize: "12.5px",
+      color: note && note.startsWith("失败") ? "#d1242f" : DSW("label-secondary"),
+      borderRadius: "6px", cursor: "pointer",
+      padding: "6px 10px", fontSize: "12.5px", maxWidth: "220px",
     },
-  }, React.createElement("span", { style: { fontSize: "14px" } }, "📁"), busy ? "整理中…" : "整理文件夹");
+  },
+  React.createElement("span", { style: { fontSize: "14px" } }, "📁"),
+  React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, label));
 }
 
 // ── 插件入口 ────────────────────────────────────────────────────────────────
 
 const name = "dsh-plugin-better-folders";
-const inject = ["slots"];
+// uiWorkspace 必须声明：客户端插件的 Context 只暴露 inject 里列出的服务，
+// 不声明就拿不到视图写入口，视图校准会静默失效（v0.1.1 的实测翻车点）。
+const inject = ["slots", "uiWorkspace"];
 
 function apply(ctx) {
   _ctx = ctx;
@@ -445,16 +549,11 @@ function apply(ctx) {
     ));
 
   // 启动后校准一次视图：整理建出的文件夹节点要靠内置「按工作区树」才看得出来。
-  ctx.effect(() => {
-    const kick = setTimeout(() => scheduleTreeViewCheck(ctx), 900);
-    return () => {
-      clearTimeout(kick);
-      if (_treeTimer !== null) {
-        clearTimeout(_treeTimer);
-        _treeTimer = null;
-      }
-    };
-  }, "better-folders: tree view enforcement");
+  // 这里刻意不用 ctx.effect —— 客户端插件上下文不保证提供它，抛错会连带
+  // 掐掉后面的初始化（同 profile 的其他客户端插件也都没用）。
+  reportDiag({ stage: "apply" });
+  const kick = setTimeout(() => scheduleTreeViewCheck(ctx), 900);
+  if (typeof kick?.unref === "function") kick.unref();
 }
 
 module.exports = { name, inject, apply };

@@ -59,10 +59,13 @@ const checks = [
   [host.includes('organize_workspaces'), 'host bundle 缺 organize_workspaces 工具'],
   [host.includes('better-folders/api'), 'host bundle 缺 HTTP API 前缀'],
   [host.includes('domain/changed'), 'host bundle 缺工作区变化监听'],
+  [host.includes('/diag'), 'host bundle 缺客户端诊断落盘点'],
   [client.includes('__ModuleLoader__.load'), 'client bundle 缺 ModuleLoader 包装'],
   [client.includes('settings.section'), 'client bundle 缺 settings.section 注册'],
   [client.includes('dsh.workspace.view.v5'), 'client bundle 缺视图切换逻辑'],
   [client.includes('ensureTreeViewMode'), 'client bundle 缺启动视图校准'],
+  [client.includes('uiWorkspace'), 'client bundle 缺 uiWorkspace 依赖声明'],
+  [client.includes('reportDiag'), 'client bundle 缺诊断上报'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)

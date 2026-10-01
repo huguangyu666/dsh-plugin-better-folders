@@ -143,6 +143,13 @@ node tools/install-into-profile.mjs --profile web --uninstall
 > **没看到效果时先查这三件事**：① 插件装的是不是**当前正在用的那个 profile**
 > （桌面版用 `desktop`，`dsh web` 用 `web`）；② 客户端半加载了没（刷新页面）；
 > ③ 侧边栏分组方式是不是「按工作区树」。
+>
+> **立刻手动见效**：侧边栏 **视图选项 → 分组方式 → 按工作区树**。整理只是把上级目录
+> 注册成工作区，真正的视觉汇合由这个内置视图完成；只要切过去，文件夹节点就会把同级
+> 工作区收进去。
+>
+> 排查「点了没反应」：客户端半会把能力探测结果写到
+> `~/.dsh/better-folders/diag.json`（`/better-folders/api/diag`），不需要开 DevTools。
 
 对话里也可以：
 
