@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.4.3";
+const BUNDLE_VERSION = "0.4.4";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -537,6 +537,16 @@ const HEADER_CSS = `
 .bf-icon-btn[data-active="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}
 .bf-row:hover{background:var(--dsw-alias-interactive-bg-hover);}
 .bf-input::placeholder{color:var(--dsw-alias-label-tertiary);}
+/* 以下逐字抄自官方 WorkspaceBrowser.module.css，用于表模式的侧边栏结构。 */
+.bf-root{box-sizing:border-box;min-height:0;padding-right:var(--dsh-sidebar-inline-padding);flex-direction:column;flex:1;display:flex;}
+.bf-section-header{box-sizing:border-box;border-radius:var(--dsw-radius-md);height:36px;color:var(--dsw-alias-label-tertiary);flex:none;justify-content:flex-end;align-items:center;gap:4px;margin-bottom:4px;padding-left:4px;display:flex;overflow:hidden;margin-top:2px;margin-right:-4px;}
+.bf-section-label{white-space:nowrap;min-width:0;max-width:45%;flex:none;line-height:20px;overflow:hidden;}
+.bf-list{min-height:0;margin-left:-4px;margin-right:var(--dsh-session-list-scrollbar-offset,2px);padding-left:4px;padding-right:calc(var(--dsh-session-list-edge-inset,12px) - var(--dsh-session-list-scrollbar-width,5px) - var(--dsh-session-list-scrollbar-offset,2px));scrollbar-gutter:stable;flex:1;padding-bottom:16px;overflow-y:auto;}
+.bf-group{position:relative;}
+.bf-group+.bf-group{margin-top:4px;}
+.bf-group>*+*{margin-top:2px;}
+.bf-overflow{border-radius:var(--dsw-radius-sm);width:100%;height:28px;padding:0 12px 0 calc(28px + var(--dsh-workspace-indent,0px));cursor:pointer;text-align:left;color:var(--dsw-alias-label-tertiary);background:0 0;border:none;font-size:12px;}
+.bf-overflow:hover{color:var(--dsw-alias-label-secondary);background:0 0;}
 `;
 
 // ── 定位「工作区」标题行 ────────────────────────────────────────────────────
@@ -1268,31 +1278,14 @@ function TableSidebarBrowser() {
   };
 
   return React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      height: "100%",
-      minHeight: 0,
-      color: "var(--dsw-alias-label-primary)",
-      fontSize: "13px",
-      padding: "0 4px",
-    },
+    className: "bf-root",
+    style: { color: "var(--dsw-alias-label-primary)", fontSize: "13px" },
   },
   React.createElement("style", null, HEADER_CSS),
 
-  // 标题行：与官方 sectionHeader 同高同色，右侧是「返回官方视图」
-  React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: "4px",
-      height: "36px",
-      flex: "none",
-      marginBottom: "4px",
-      color: "var(--dsw-alias-label-tertiary)",
-    },
-  },
-    React.createElement("span", { style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+  // 标题行：逐字用官方 .sectionHeader（36px / label-tertiary / margin-top 2px / margin-right -4px）
+  React.createElement("div", { className: "bf-section-header" },
+    React.createElement("span", { className: "bf-section-label", style: { flex: 1, maxWidth: "none" } },
       "工作区表"),
     React.createElement("button", {
       type: "button",
@@ -1317,8 +1310,8 @@ function TableSidebarBrowser() {
       }, entry.name)),
   ),
 
-  // 成员列表
-  React.createElement("div", { style: { flex: 1, minHeight: 0, overflowY: "auto" } },
+  // 成员列表：逐字用官方 .list
+  React.createElement("div", { className: "bf-list" },
     active === null
       ? null
       : (shown.length === 0
@@ -1326,7 +1319,7 @@ function TableSidebarBrowser() {
           "这个表还没有成员。点标题行的 📋 → 编辑，把工作区勾进来。")
         : shown.map((workspace) => {
           const isOpen = expanded[workspace.id] === true;
-          return React.createElement("div", { key: workspace.id },
+          return React.createElement("div", { key: workspace.id, className: "bf-group" },
             React.createElement("div", {
               className: "bf-row",
               style: PROJECT_ROW_STYLE,
@@ -1383,16 +1376,11 @@ function TableSidebarBrowser() {
                   : null,
                 )),
                 hidden > 0 && React.createElement("div", {
-                  className: "bf-row",
-                  style: {
-                    ...SESSION_ROW_STYLE,
-                    "--dsh-workspace-indent": "12px",
-                    color: "var(--dsw-alias-label-tertiary)",
-                  },
+                  className: "bf-overflow",
+                  style: { "--dsh-workspace-indent": "12px" },
                   onClick: () => setLimits((current) => ({ ...current, [workspace.id]: limit + SESSION_FOLD_LIMIT })),
                 },
-                React.createElement("span", { style: { ...ROW_TITLE_STYLE, marginInlineStart: "16px" } },
-                  `展开其余 ${hidden} 个会话`)),
+                `展开其余 ${hidden} 个会话`),
               );
             })(),
           );
