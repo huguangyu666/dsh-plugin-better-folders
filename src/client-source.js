@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.4.0";
+const BUNDLE_VERSION = "0.4.1";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -693,6 +693,77 @@ const MENU_LABEL_STYLE = {
   color: "var(--dsw-alias-label-tertiary)",
 };
 
+// ── 官方行样式（逐字抄自 dsh-client-ui-workspace 的 rows/Rows.module.css）─────
+//
+// 之前我按菜单行的手感自己调了一套，结果和官方侧边栏对不上。这里直接抄原文。
+
+/** 行基底：`.projectRow, .sessionRow { ... }`。 */
+const ROW_BASE_STYLE = {
+  borderRadius: "var(--dsw-radius-md)",
+  padding: "0 8px",
+  cursor: "pointer",
+  userSelect: "none",
+  color: "var(--dsw-alias-label-primary)",
+  alignItems: "center",
+  gap: "6px",
+  paddingInlineStart: "calc(8px + var(--dsh-workspace-indent, 0px))",
+  display: "flex",
+  boxSizing: "border-box",
+};
+
+/** 工作区行：`.projectRow { height: 34px }`。 */
+const PROJECT_ROW_STYLE = { ...ROW_BASE_STYLE, height: "34px" };
+
+/** 会话行：`.sessionRow { height: 32px }`。 */
+const SESSION_ROW_STYLE = { ...ROW_BASE_STYLE, height: "32px" };
+
+/** 行标题：`.title { font-size:14px; line-height:20px; margin:0 6px 0 4px; flex:1 }`。 */
+const ROW_TITLE_STYLE = {
+  fontSize: "14px",
+  lineHeight: "20px",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  minWidth: 0,
+  overflow: "hidden",
+  flex: 1,
+  margin: "0 6px 0 4px",
+};
+
+/** 行内图标槽：`.slot { width:16px; height:20px; color:label-tertiary }`。 */
+const ROW_SLOT_STYLE = {
+  width: "16px",
+  height: "20px",
+  color: "var(--dsw-alias-label-tertiary)",
+  flex: "none",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+/** 行内次要信息：`.time { font-size:10px; line-height:16px; color:label-tertiary }`。 */
+const ROW_META_STYLE = {
+  color: "var(--dsw-alias-label-tertiary)",
+  flex: "none",
+  fontSize: "10px",
+  lineHeight: "16px",
+};
+
+/** 行内小按钮：`.iconButton { width:16px; height:16px; color:label-tertiary }`。 */
+const ROW_ICON_BUTTON_STYLE = {
+  width: "16px",
+  height: "16px",
+  borderRadius: "var(--dsw-radius-xs)",
+  color: "var(--dsw-alias-label-tertiary)",
+  background: "transparent",
+  border: "none",
+  flex: "none",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  cursor: "pointer",
+};
+
 /** 次要文字色（官方侧边栏标题行用的就是它）。 */
 const LABEL_TERTIARY = "var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary))";
 /** 危险动作色。 */
@@ -1192,21 +1263,23 @@ function TableSidebarBrowser() {
           return React.createElement("div", { key: workspace.id },
             React.createElement("div", {
               className: "bf-row",
-              style: { ...MENU_ITEM_STYLE, minHeight: "30px" },
+              style: PROJECT_ROW_STYLE,
             },
+              React.createElement("span", { style: ROW_SLOT_STYLE },
+                iconOr("IconFolderOpenOutlineRegular", "📁", 14)),
               React.createElement("span", {
                 onClick: () => openWorkspace(workspace.id),
                 title: workspace.path,
-                style: { flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+                style: { ...ROW_TITLE_STYLE, cursor: "pointer" },
               }, workspace.title || workspace.path),
-              React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", fontSize: "11px" } },
+              React.createElement("span", { style: ROW_META_STYLE },
                 `${workspace.sessionCount}`),
               workspace.sessions.length > 0 && React.createElement("button", {
                 type: "button",
                 title: isOpen ? "收起会话" : "展开会话",
-                style: { ...HEADER_ICON_BUTTON, width: "18px", height: "18px" },
+                style: ROW_ICON_BUTTON_STYLE,
                 onClick: () => setExpanded((current) => ({ ...current, [workspace.id]: !isOpen })),
-              }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 11)),
+              }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 12)),
             ),
             isOpen && React.createElement("div", null,
               workspace.sessions.map((session) => React.createElement("div", {
@@ -1215,14 +1288,16 @@ function TableSidebarBrowser() {
                 title: session.id,
                 onClick: () => openSession(session.id),
                 style: {
-                  ...MENU_ITEM_STYLE,
-                  minHeight: "26px",
-                  paddingLeft: "24px",
-                  fontSize: "12px",
+                  ...SESSION_ROW_STYLE,
+                  "--dsh-workspace-indent": "12px",
                   color: session.title ? undefined : "var(--dsw-alias-label-tertiary)",
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 },
-              }, session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）"))),
+              },
+              React.createElement("span", { style: ROW_SLOT_STYLE },
+                iconOr("IconListPenOutlineRegular", "·", 12)),
+              React.createElement("span", { style: ROW_TITLE_STYLE },
+                session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）")),
+              )),
             ),
           );
         })),

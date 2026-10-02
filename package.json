@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-better-folders",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "更好的 DSH 文件夹：自动整理工作区。把同一个上级目录下的工作区汇合成一个可折叠的文件夹节点（基于 DSH 内置的「按工作区树」视图），并提供一键整理 / 预览 / 还原、原生设置与侧边栏快捷入口。",
   "type": "module",
   "main": "lib/index.js",

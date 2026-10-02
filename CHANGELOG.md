@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.1 — 2026-10-01
+
+* **表模式的侧边栏行改成逐字抄官方样式**（用户反馈「和官方的不一样」）。
+  之前我按菜单行的手感自己调了一套（min-height + 13px 字号 + 硬编码缩进），
+  和官方侧边栏对不上。现在直接抄 `dsh-client-ui-workspace` 的
+  `rows/Rows.module.css` 原文：
+
+  ```css
+  .projectRow,.sessionRow{border-radius:var(--dsw-radius-md);padding:0 8px;
+    padding-inline-start:calc(8px + var(--dsh-workspace-indent,0px));gap:6px;display:flex}
+  .projectRow{height:34px}   .sessionRow{height:32px}
+  .title{font-size:14px;line-height:20px;margin:0 6px 0 4px;flex:1;text-overflow:ellipsis}
+  .slot{width:16px;height:20px;color:var(--dsw-alias-label-tertiary)}
+  .iconButton{width:16px;height:16px;border-radius:var(--dsw-radius-xs)}
+  ```
+
+  工作区行现在带官方文件夹图标（`IconFolderOpenOutlineRegular`），会话行带
+  `IconListPenOutlineRegular`，缩进用官方的 `--dsh-workspace-indent` 变量（12px/级）。
+
+### 顺带说明：「虚拟工作区」这条路为什么走不通
+
+用户建议"搞一个虚拟工作区"。查证后确认不可行：
+
+* `workspaceRegistry.create(path)` 会 `stat` 校验路径必须是**真实存在的目录**；
+* `attachSession(sessionId)` 会校验 `session.cwd === workspace.path`，否则抛错
+  （`dsh-workspace/lib/index.js:111`）——所以虚拟工作区装不下别的目录的会话；
+* 官方树视图的嵌套是 `child.startsWith(parent + "/")`，纯路径前缀。
+
+结论：官方侧边栏里的"文件夹"**就是"路径祖先"**，不是一种独立实体，数据模型里没有
+"集合"这个维度。虚拟工作区最多只能是侧边栏里一个空的组。
+
 ## 0.4.0 — 2026-10-01
 
 * **新增「表模式」：侧边栏里直接切换**（用户要的深度融合，终于做到了）。
