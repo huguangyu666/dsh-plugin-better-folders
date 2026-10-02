@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.4.4";
+const BUNDLE_VERSION = "0.5.0";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -539,6 +539,9 @@ const HEADER_CSS = `
 .bf-input::placeholder{color:var(--dsw-alias-label-tertiary);}
 /* 以下逐字抄自官方 WorkspaceBrowser.module.css，用于表模式的侧边栏结构。 */
 .bf-root{box-sizing:border-box;min-height:0;padding-right:var(--dsh-sidebar-inline-padding);flex-direction:column;flex:1;display:flex;}
+.bf-tree-body{flex-direction:column;flex:1;min-height:0;display:flex;position:relative;}
+.bf-exits{position:absolute;inset:0;contain:strict;overflow:clip;pointer-events:none;}
+.bf-fade{left:0;right:var(--dsh-session-list-edge-inset,12px);background:linear-gradient(to bottom,transparent,var(--dsw-specific-sidebar-fill));pointer-events:none;height:24px;position:absolute;bottom:0;}
 .bf-section-header{box-sizing:border-box;border-radius:var(--dsw-radius-md);height:36px;color:var(--dsw-alias-label-tertiary);flex:none;justify-content:flex-end;align-items:center;gap:4px;margin-bottom:4px;padding-left:4px;display:flex;overflow:hidden;margin-top:2px;margin-right:-4px;}
 .bf-section-label{white-space:nowrap;min-width:0;max-width:45%;flex:none;line-height:20px;overflow:hidden;}
 .bf-list{min-height:0;margin-left:-4px;margin-right:var(--dsh-session-list-scrollbar-offset,2px);padding-left:4px;padding-right:calc(var(--dsh-session-list-edge-inset,12px) - var(--dsh-session-list-scrollbar-width,5px) - var(--dsh-session-list-scrollbar-offset,2px));scrollbar-gutter:stable;flex:1;padding-bottom:16px;overflow-y:auto;}
@@ -789,6 +792,178 @@ const ROW_META_STYLE = {
 
 /** 官方折叠上限：`COLLAPSED_SESSION_LIMIT = 5`（WorkspaceBrowser.tsx:55）。 */
 const SESSION_FOLD_LIMIT = 5;
+
+// ── AnimatedRows：逐字搬自官方 rows/AnimatedRows.tsx（"丝滑"的来源）────────
+//
+// 官方的展开/收起之所以丝滑，靠的就是这个组件：
+//   * getSnapshotBeforeUpdate 里读旧位置，更新后算 dx/dy，用 Web Animations API
+//     从 translate(dx,dy) 滑回 translate(0,0) —— 这就是 FLIP，200ms ease-out；
+//   * 新增行 100ms 淡入；被移除的行克隆到绝对定位的 .exits 图层里 100ms 淡出；
+//   * 首次指针/键盘输入之前不动画（armed），并尊重 prefers-reduced-motion。
+// 它是与框架无关的 class 组件，所以可以整段搬过来，不需要 TSX 构建链。
+
+/** 行淡入淡出时长（官方 ROW_FADE_MS）。 */
+const ROW_FADE_MS = 100;
+/** 行滑行时长（官方 ROW_GLIDE_MS）。 */
+const ROW_GLIDE_MS = 200;
+
+/** 两次渲染的行键是否完全一致。 */
+function sameRowKeys(previous, next) {
+  return previous.rowKeys.length === next.rowKeys.length
+    && previous.rowKeys.every((key, index) => key === next.rowKeys[index]);
+}
+
+/** 行矩形是否与视口相交。 */
+function rectIntersects(row, viewport) {
+  return row.bottom > viewport.top && row.top < viewport.bottom
+    && row.right > viewport.left && row.left < viewport.right;
+}
+
+/** 只在行的成员或顺序变化时做 FLIP 动画（官方 AnimatedRows 的等价实现）。 */
+class AnimatedRows extends React.Component {
+  constructor(props) {
+    super(props);
+    this.armed = false;
+    this.list = React.createRef();
+    this.overlay = React.createRef();
+    this.movements = new Map();
+    this.exits = new Map();
+    this.readPositions = this.readPositions.bind(this);
+    this.move = this.move.bind(this);
+    this.removeExit = this.removeExit.bind(this);
+    this.clear = this.clear.bind(this);
+  }
+
+  getSnapshotBeforeUpdate(previous) {
+    const list = this.list.current;
+    if (!this.armed || sameRowKeys(previous, this.props) || previous.resetKey !== this.props.resetKey
+      || !previous.ready || !this.props.ready || list === null
+      || typeof list.animate !== "function"
+      || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+
+    const viewport = list.getBoundingClientRect();
+    const positions = this.readPositions();
+    const nextKeys = new Set(this.props.rowKeys);
+    const removed = new Map();
+    for (const [key, row] of positions) {
+      if (nextKeys.has(key) || !rectIntersects(row.rect, viewport)) continue;
+      const clone = row.element.cloneNode(true);
+      clone.removeAttribute("data-row-key");
+      clone.inert = true;
+      clone.style.setProperty(
+        "--dsh-workspace-indent", getComputedStyle(row.element).getPropertyValue("--dsh-workspace-indent"),
+      );
+      removed.set(key, { ...row, element: clone });
+    }
+    return { positions, removed };
+  }
+
+  componentDidUpdate(previous, _state, snapshot) {
+    if (snapshot === null) {
+      if (!sameRowKeys(previous, this.props) || previous.resetKey !== this.props.resetKey
+        || previous.ready !== this.props.ready) this.clear();
+      return;
+    }
+
+    this.cancelMovements();
+    const list = this.list.current;
+    const overlay = this.overlay.current;
+    const viewport = list.getBoundingClientRect();
+    const origin = overlay.getBoundingClientRect();
+    const positions = this.readPositions();
+
+    for (const [key, row] of positions) {
+      this.removeExit(key);
+      const previousRow = snapshot.positions.get(key);
+      if (!rectIntersects(row.rect, viewport)
+        && (previousRow === undefined || !rectIntersects(previousRow.rect, viewport))) continue;
+      if (previousRow === undefined) {
+        this.move(row.element, [{ opacity: 0 }, { opacity: 1 }], ROW_FADE_MS);
+        continue;
+      }
+      const dx = previousRow.rect.left - row.rect.left;
+      const dy = previousRow.rect.top - row.rect.top;
+      if (dx === 0 && dy === 0 && previousRow.opacity === 1) continue;
+      this.move(row.element, [
+        { transform: `translate(${String(dx)}px, ${String(dy)}px)`, opacity: previousRow.opacity },
+        { transform: "translate(0, 0)", opacity: 1 },
+      ], ROW_GLIDE_MS);
+    }
+
+    for (const [key, row] of snapshot.removed) {
+      const { element } = row;
+      this.removeExit(key);
+      Object.assign(element.style, {
+        position: "absolute", margin: "0", transform: "none", boxSizing: "border-box",
+        left: `${String(row.rect.left - origin.left)}px`,
+        top: `${String(row.rect.top - origin.top)}px`,
+        width: `${String(row.rect.width)}px`, height: `${String(row.rect.height)}px`,
+      });
+      overlay.append(element);
+      const animation = element.animate([{ opacity: row.opacity }, { opacity: 0 }], {
+        duration: ROW_FADE_MS, easing: "ease-out", fill: "forwards",
+      });
+      this.exits.set(key, { element, animation });
+      animation.onfinish = () => { this.removeExit(key); };
+    }
+  }
+
+  componentWillUnmount() {
+    this.clear();
+  }
+
+  readPositions() {
+    const list = this.list.current;
+    const rows = list.querySelectorAll("[data-row-key]");
+    return new Map(Array.from(rows, (element) => [element.dataset.rowKey, {
+      element,
+      rect: element.getBoundingClientRect(),
+      opacity: this.movements.has(element) ? Number(getComputedStyle(element).opacity) : 1,
+    }]));
+  }
+
+  move(element, keyframes, duration) {
+    const animation = element.animate(keyframes, { duration, easing: "ease-out" });
+    this.movements.set(element, animation);
+    animation.onfinish = () => { this.movements.delete(element); animation.cancel(); };
+  }
+
+  cancelMovements() {
+    for (const animation of this.movements.values()) {
+      animation.onfinish = null;
+      animation.cancel();
+    }
+    this.movements.clear();
+  }
+
+  removeExit(key) {
+    const exit = this.exits.get(key);
+    if (exit === undefined) return;
+    exit.animation.onfinish = null;
+    exit.animation.cancel();
+    exit.element.remove();
+    this.exits.delete(key);
+  }
+
+  clear() {
+    this.cancelMovements();
+    for (const key of this.exits.keys()) this.removeExit(key);
+  }
+
+  render() {
+    return React.createElement(React.Fragment, null,
+      React.createElement("div", {
+        ref: this.list,
+        className: this.props.className,
+        role: "tree",
+        "aria-label": this.props.label,
+        onPointerDownCapture: () => { this.armed = true; },
+        onKeyDownCapture: () => { this.armed = true; },
+      }, this.props.children),
+      React.createElement("div", { ref: this.overlay, className: "bf-exits", "aria-hidden": "true" }),
+    );
+  }
+}
 
 /**
  * 相对时间文本（对齐官方侧边栏右侧的「5分钟 / 1天」）。
@@ -1277,6 +1452,18 @@ function TableSidebarBrowser() {
     }
   };
 
+  // 按 DOM 顺序列出将要渲染的行键 —— AnimatedRows 靠它比对前后两帧的成员与顺序。
+  // 键的构造与官方一致：workspace:<id> / session:<id> / overflow:<id>（WorkspaceBrowser.tsx:2446-2450）。
+  const rowKeys = [];
+  for (const workspace of shown) {
+    rowKeys.push(`workspace:${workspace.id}`);
+    if (expanded[workspace.id] !== true) continue;
+    const limit = limits[workspace.id] ?? SESSION_FOLD_LIMIT;
+    const visible = workspace.sessions.slice(0, limit);
+    for (const session of visible) rowKeys.push(`session:${session.id}`);
+    if (workspace.sessions.length > visible.length) rowKeys.push(`overflow:${workspace.id}`);
+  }
+
   return React.createElement("div", {
     className: "bf-root",
     style: { color: "var(--dsw-alias-label-primary)", fontSize: "13px" },
@@ -1310,8 +1497,15 @@ function TableSidebarBrowser() {
       }, entry.name)),
   ),
 
-  // 成员列表：逐字用官方 .list
-  React.createElement("div", { className: "bf-list" },
+  // 成员列表：官方结构 treeBody > AnimatedRows(.list) + .fade
+  React.createElement("div", { className: "bf-tree-body" },
+    React.createElement(AnimatedRows, {
+      className: "bf-list",
+      label: "工作区表",
+      rowKeys,
+      ready: data !== null,
+      resetKey: JSON.stringify([activeId, limits]),
+    },
     active === null
       ? null
       : (shown.length === 0
@@ -1322,6 +1516,7 @@ function TableSidebarBrowser() {
           return React.createElement("div", { key: workspace.id, className: "bf-group" },
             React.createElement("div", {
               className: "bf-row",
+              "data-row-key": `workspace:${workspace.id}`,
               style: PROJECT_ROW_STYLE,
             },
               React.createElement("span", { style: ROW_SLOT_STYLE },
@@ -1350,6 +1545,7 @@ function TableSidebarBrowser() {
                 visible.map((session) => React.createElement("div", {
                   key: session.id,
                   className: "bf-row",
+                  "data-row-key": `session:${session.id}`,
                   title: session.id,
                   onClick: () => openSession(session.id),
                   style: {
@@ -1375,8 +1571,10 @@ function TableSidebarBrowser() {
                   ? React.createElement("span", { style: ROW_META_STYLE }, relativeTimeText(session.updatedAt))
                   : null,
                 )),
-                hidden > 0 && React.createElement("div", {
+                hidden > 0 && React.createElement("button", {
+                  type: "button",
                   className: "bf-overflow",
+                  "data-row-key": `overflow:${workspace.id}`,
                   style: { "--dsh-workspace-indent": "12px" },
                   onClick: () => setLimits((current) => ({ ...current, [workspace.id]: limit + SESSION_FOLD_LIMIT })),
                 },
@@ -1385,6 +1583,8 @@ function TableSidebarBrowser() {
             })(),
           );
         })),
+    ),
+    React.createElement("span", { className: "bf-fade" }),
   ),
 
   note ? React.createElement("div", { style: { ...MENU_LABEL_STYLE, color: "var(--dsw-alias-state-error-primary)" } }, note) : null,

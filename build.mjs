@@ -75,6 +75,9 @@ const checks = [
   [client.includes('better-folders.tables'), 'client bundle 缺主区页面键'],
   [client.includes('TableSidebarBrowser'), 'client bundle 缺表模式侧边栏浏览器'],
   [client.includes('priority: -1'), 'client bundle 缺优先级抢占'],
+  [client.includes('bf-exits'), 'client bundle 缺官方 AnimatedRows 的浮层'],
+  [client.includes('data-row-key'), 'client bundle 缺 FLIP 行键'],
+  [client.includes('--dsh-workspace-indent'), 'client bundle 缺官方缩进变量'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)
