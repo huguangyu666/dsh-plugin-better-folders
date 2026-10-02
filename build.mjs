@@ -71,6 +71,8 @@ const checks = [
   [client.includes('shell.overlay'), 'client bundle 缺标题行浮层注册'],
   [client.includes('sectionHeader'), 'client bundle 缺标题行定位逻辑'],
   [client.includes('TablesPanel'), 'client bundle 缺「表」面板'],
+  [client.includes('sidebar.panellist'), 'client bundle 缺侧边栏导航项注册'],
+  [client.includes('better-folders.tables'), 'client bundle 缺主区页面键'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)

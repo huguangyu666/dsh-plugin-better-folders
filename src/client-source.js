@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.2.3";
+const BUNDLE_VERSION = "0.3.0";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -777,7 +777,7 @@ function Chip({ active, children, onClick, title }) {
  * @param {{ onClose: Function, anchorLeft: number, anchorTop: number }} props 位置与关闭回调。
  * @returns {object} React 元素。
  */
-function TablesPanel({ onClose, anchorLeft, anchorTop }) {
+function TablesPanel({ onClose, anchorLeft = 0, anchorTop = 0, embedded = false }) {
   const [data, setData] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [manage, setManage] = useState(false);
@@ -853,19 +853,32 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
   };
 
   return React.createElement(React.Fragment, null,
-    // 点击外部关闭
-    React.createElement("div", {
+    // 点击外部关闭（嵌入主区时不需要）
+    !embedded && React.createElement("div", {
       onClick: onClose,
       style: { position: "fixed", inset: 0, zIndex: 59, background: "transparent" },
     }),
     React.createElement("div", {
-      style: { ...PANEL_SURFACE_STYLE, left: `${anchorLeft}px`, top: `${anchorTop}px` },
+      style: embedded
+        ? {
+          ...PANEL_SURFACE_STYLE,
+          position: "static",
+          width: "100%",
+          maxHeight: "none",
+          height: "100%",
+          boxSizing: "border-box",
+          borderRadius: "0",
+          boxShadow: "none",
+        }
+        : { ...PANEL_SURFACE_STYLE, left: `${anchorLeft}px`, top: `${anchorTop}px` },
       onClick: (event) => event.stopPropagation(),
     },
     React.createElement("style", null, HEADER_CSS),
     // 毛玻璃材质层（在内容之下）
     React.createElement("div", { style: PANEL_MATERIAL_STYLE }),
-    React.createElement("div", { style: PANEL_CONTENT_STYLE },
+    React.createElement("div", { style: embedded ? { ...PANEL_CONTENT_STYLE, padding: "20px 24px" } : PANEL_CONTENT_STYLE },
+    embedded && React.createElement("div", { style: { ...MENU_LABEL_STYLE, padding: "0 0 12px", fontSize: "13px" } },
+      "工作区表 —— 把任意几个工作区圈在一起，方便来回切换。表只是集合视图，不创建目录、不改工作目录、不碰会话历史。"),
 
     // 表选择
     React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", padding: "2px" } },
@@ -998,6 +1011,31 @@ function TablesPanel({ onClose, anchorLeft, anchorTop }) {
     ),
     ),
   );
+}
+
+// ── 侧边栏导航项 + 主区页面（深度融合入口）──────────────────────────────────
+
+/**
+ * 侧边栏导航项图标：与「插件」那一行同级，走官方 `sidebar.panellist` 槽位。
+ * @param {{size?: number}} props 官方传入的尺寸。
+ * @returns {object} React 元素。
+ */
+function TablesNavIcon({ size = 16 }) {
+  return iconOr("IconFlatListOutlineRegular", "📋", size);
+}
+
+/**
+ * 主区的「工作区表」页面：官方 `main` 键控槽位，点侧边栏那一行就会切过来。
+ *
+ * 为什么不做成"侧边栏里直接分组"：官方侧边栏的分组是在 `WorkspaceBrowser` 组件内部
+ * 由**已注册工作区**算出来的，`groupBy` 只有三个固定值，且 `sidebar.workspaces` 只对外
+ * 开放 5 个子洞（会话菜单/会话行按钮/目录选择器/会话行装饰），**没有工作区行或分组标题
+ * 的洞**。要改只能整个覆盖官方浏览器 —— 代价是失去搜索、拖拽排序、归档、Pin、展开记忆
+ * 和重命名/删除对话框。那不是深度融合，是换一个更弱的侧边栏，所以没那么做。
+ * @returns {object} React 元素。
+ */
+function TablesPage() {
+  return React.createElement(TablesPanel, { embedded: true, onClose: () => {} });
 }
 
 // ── 标题行图标按钮 ──────────────────────────────────────────────────────────
@@ -1186,6 +1224,20 @@ function apply(ctx) {
     ctx.slots.register(
       { name: "shell.overlay", id: "better-folders.header", order: 40 },
       WorkspaceHeaderActions,
+    ));
+
+  // 深度融合入口：官方 sidebar.panellist 导航项（与「插件」并排）+ main 主区页面。
+  // 这是官方槽位，不是浮层 —— 点一下就切到中间的完整切换台。
+  ctx.slots.inject("sidebar.panellist", () =>
+    ctx.slots.register(
+      { name: "sidebar.panellist", id: "better-folders.tables", order: 80, label: "工作区表" },
+      TablesNavIcon,
+    ));
+
+  ctx.slots.inject("main", () =>
+    ctx.slots.register(
+      { name: "main", key: "better-folders.tables" },
+      TablesPage,
     ));
 
   // 启动后校准一次视图：整理建出的文件夹节点要靠内置「按工作区树」才看得出来。
