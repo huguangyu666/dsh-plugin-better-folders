@@ -73,6 +73,8 @@ const checks = [
   [client.includes('TablesPanel'), 'client bundle 缺「表」面板'],
   [client.includes('sidebar.panellist'), 'client bundle 缺侧边栏导航项注册'],
   [client.includes('better-folders.tables'), 'client bundle 缺主区页面键'],
+  [client.includes('TableSidebarBrowser'), 'client bundle 缺表模式侧边栏浏览器'],
+  [client.includes('priority: -1'), 'client bundle 缺优先级抢占'],
 ]
 for (const [ok, message] of checks) {
   if (!ok) throw new Error(message)

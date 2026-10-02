@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.3.0";
+const BUNDLE_VERSION = "0.4.0";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -934,6 +934,11 @@ function TablesPanel({ onClose, anchorLeft = 0, anchorTop = 0, embedded = false 
         active === null ? "还没有表" : `${active.name} · ${active.workspaceIds.length} 个工作区`),
       React.createElement("span", { style: { flex: 1 } }),
       active !== null && React.createElement(Chip, {
+        active: false,
+        title: "在侧边栏直接显示这个表（退出即还原官方工作区浏览器，功能一个不丢）",
+        onClick: () => { enterTableMode(); onClose(); },
+      }, "侧边栏打开"),
+      active !== null && React.createElement(Chip, {
         active: manage,
         onClick: () => { setEditor(null); setConfirmDelete(false); setManage((value) => !value); },
         title: manage ? "回到切换视图" : "编辑这个表的成员",
@@ -1010,6 +1015,220 @@ function TablesPanel({ onClose, anchorLeft = 0, anchorTop = 0, embedded = false 
       "表只是工作区的集合视图，不创建目录、不改工作目录、不碰会话历史。"),
     ),
     ),
+  );
+}
+
+// ── 表模式：临时接管 sidebar.workspaces ─────────────────────────────────────
+//
+// `sidebar.workspaces` 是 single 槽位，ui-slots 的 register 支持**优先级抢占**：
+// rec.entries 按 priority 升序排，数字小的渲染；register 返回 disposer。
+// 于是表模式 = 用 priority:-1 抢占，退出 = dispose 归还官方浏览器。
+// **官方功能一个不丢**（搜索/拖拽/归档/Pin/展开记忆），只是表模式下暂时让位。
+
+/** 表模式的 disposer（非 null 表示当前处于表模式）。 */
+let _tableModeDisposer = null;
+let _tableModeActive = false;
+const _tableModeSubscribers = new Set();
+/** 当前在表模式里选中的表 id（与标题行面板共享）。 */
+let _activeTableId = null;
+
+/** 订阅表模式开关。 */
+function subscribeTableMode(listener) {
+  _tableModeSubscribers.add(listener);
+  return () => _tableModeSubscribers.delete(listener);
+}
+
+function notifyTableMode() {
+  for (const listener of _tableModeSubscribers) {
+    try {
+      listener(_tableModeActive);
+    } catch { /* 单个订阅者出错不影响其它 */ }
+  }
+}
+
+/** 进入表模式：抢占侧边栏工作区区域。 */
+function enterTableMode() {
+  if (_tableModeDisposer !== null) return true;
+  try {
+    _tableModeDisposer = _ctx.slots.register(
+      { name: "sidebar.workspaces", priority: -1 },
+      TableSidebarBrowser,
+    );
+    _tableModeActive = true;
+    notifyTableMode();
+    reportDiag({ stage: "table-mode", result: "entered" });
+    return true;
+  } catch (error) {
+    _tableModeDisposer = null;
+    reportDiag({ stage: "table-mode", result: "enter-failed", error: String(error?.message ?? error) });
+    return false;
+  }
+}
+
+/** 退出表模式：归还官方浏览器。 */
+function exitTableMode() {
+  if (_tableModeDisposer === null) return;
+  try {
+    _tableModeDisposer();
+  } catch { /* 已释放 */ }
+  _tableModeDisposer = null;
+  _tableModeActive = false;
+  notifyTableMode();
+  reportDiag({ stage: "table-mode", result: "exited" });
+}
+
+/**
+ * 表模式下的侧边栏浏览器：直接列出该表的工作区与会话，点一下就切过去。
+ *
+ * 它不是官方的替代品，只是"切换器"形态的临时视图 —— 退出即还原官方浏览器。
+ * @returns {object} React 元素。
+ */
+function TableSidebarBrowser() {
+  const [data, setData] = useState(null);
+  const [activeId, setActiveId] = useState(_activeTableId);
+  const [expanded, setExpanded] = useState({});
+  const [note, setNote] = useState("");
+
+  const reload = useCallback(async () => {
+    try {
+      const next = await loadTables();
+      setData(next);
+      const wanted = _activeTableId ?? next.collections[0]?.id ?? null;
+      setActiveId(wanted);
+      _activeTableId = wanted;
+    } catch (error) {
+      setNote(`读取失败：${error.message}`);
+    }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+
+  const collections = data?.collections ?? [];
+  const workspaces = data?.workspaces ?? [];
+  const active = collections.find((entry) => entry.id === activeId) ?? null;
+  const memberIds = new Set(active?.workspaceIds ?? []);
+  const shown = workspaces.filter((workspace) => memberIds.has(workspace.id));
+
+  const pick = (id) => {
+    _activeTableId = id;
+    setActiveId(id);
+  };
+
+  const openWorkspace = (workspaceId) => {
+    try {
+      _ctx?.uiWorkspace?.openWorkspace?.(workspaceId);
+    } catch (error) {
+      setNote(`打开失败：${error.message}`);
+    }
+  };
+
+  const openSession = (sessionId) => {
+    try {
+      _ctx?.uiWorkspace?.openSession?.(sessionId);
+    } catch (error) {
+      setNote(`打开失败：${error.message}`);
+    }
+  };
+
+  return React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      height: "100%",
+      minHeight: 0,
+      color: "var(--dsw-alias-label-primary)",
+      fontSize: "13px",
+      padding: "0 4px",
+    },
+  },
+  React.createElement("style", null, HEADER_CSS),
+
+  // 标题行：与官方 sectionHeader 同高同色，右侧是「返回官方视图」
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: "4px",
+      height: "36px",
+      flex: "none",
+      marginBottom: "4px",
+      color: "var(--dsw-alias-label-tertiary)",
+    },
+  },
+    React.createElement("span", { style: { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+      "工作区表"),
+    React.createElement("button", {
+      type: "button",
+      className: "bf-icon-btn",
+      title: "退出表视图，回到官方工作区浏览器",
+      style: HEADER_ICON_BUTTON,
+      onClick: () => exitTableMode(),
+    }, iconOr("IconChevronLeftOutlineRegular", "←", 14)),
+  ),
+
+  // 表选择
+  React.createElement("div", {
+    style: { display: "flex", gap: "4px", flexWrap: "wrap", padding: "0 4px 6px", flex: "none" },
+  },
+    collections.length === 0
+      ? React.createElement("span", { style: MENU_LABEL_STYLE }, "还没有表。点标题行的 📋 建一个。")
+      : collections.map((entry) => React.createElement(Chip, {
+        key: entry.id,
+        active: entry.id === activeId,
+        title: `${entry.workspaceIds.length} 个工作区`,
+        onClick: () => pick(entry.id),
+      }, entry.name)),
+  ),
+
+  // 成员列表
+  React.createElement("div", { style: { flex: 1, minHeight: 0, overflowY: "auto" } },
+    active === null
+      ? null
+      : (shown.length === 0
+        ? React.createElement("div", { style: { ...MENU_LABEL_STYLE, lineHeight: 1.6 } },
+          "这个表还没有成员。点标题行的 📋 → 编辑，把工作区勾进来。")
+        : shown.map((workspace) => {
+          const isOpen = expanded[workspace.id] === true;
+          return React.createElement("div", { key: workspace.id },
+            React.createElement("div", {
+              className: "bf-row",
+              style: { ...MENU_ITEM_STYLE, minHeight: "30px" },
+            },
+              React.createElement("span", {
+                onClick: () => openWorkspace(workspace.id),
+                title: workspace.path,
+                style: { flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+              }, workspace.title || workspace.path),
+              React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", flex: "none", fontSize: "11px" } },
+                `${workspace.sessionCount}`),
+              workspace.sessions.length > 0 && React.createElement("button", {
+                type: "button",
+                title: isOpen ? "收起会话" : "展开会话",
+                style: { ...HEADER_ICON_BUTTON, width: "18px", height: "18px" },
+                onClick: () => setExpanded((current) => ({ ...current, [workspace.id]: !isOpen })),
+              }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 11)),
+            ),
+            isOpen && React.createElement("div", null,
+              workspace.sessions.map((session) => React.createElement("div", {
+                key: session.id,
+                className: "bf-row",
+                title: session.id,
+                onClick: () => openSession(session.id),
+                style: {
+                  ...MENU_ITEM_STYLE,
+                  minHeight: "26px",
+                  paddingLeft: "24px",
+                  fontSize: "12px",
+                  color: session.title ? undefined : "var(--dsw-alias-label-tertiary)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                },
+              }, session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）"))),
+            ),
+          );
+        })),
+  ),
+
+  note ? React.createElement("div", { style: { ...MENU_LABEL_STYLE, color: "var(--dsw-alias-state-error-primary)" } }, note) : null,
   );
 }
 
@@ -1239,6 +1458,9 @@ function apply(ctx) {
       { name: "main", key: "better-folders.tables" },
       TablesPage,
     ));
+
+  // 插件卸载 / 热重载时把抢占的侧边栏还回去，别把官方浏览器留在阴影里。
+  ctx.effect(() => () => exitTableMode(), "better-folders: table mode cleanup");
 
   // 启动后校准一次视图：整理建出的文件夹节点要靠内置「按工作区树」才看得出来。
   // 这里刻意不用 ctx.effect —— 客户端插件上下文不保证提供它，抛错会连带
