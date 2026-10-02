@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.4.2";
+const BUNDLE_VERSION = "0.4.3";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -777,6 +777,9 @@ const ROW_META_STYLE = {
   lineHeight: "16px",
 };
 
+/** 官方折叠上限：`COLLAPSED_SESSION_LIMIT = 5`（WorkspaceBrowser.tsx:55）。 */
+const SESSION_FOLD_LIMIT = 5;
+
 /**
  * 相对时间文本（对齐官方侧边栏右侧的「5分钟 / 1天」）。
  * @param {number|undefined} ts 毫秒时间戳。
@@ -1207,6 +1210,7 @@ function TableSidebarBrowser() {
   const [data, setData] = useState(null);
   const [activeId, setActiveId] = useState(_activeTableId);
   const [expanded, setExpanded] = useState({});
+  const [limits, setLimits] = useState({});
   const [note, setNote] = useState("");
 
   const reload = useCallback(async () => {
@@ -1343,27 +1347,54 @@ function TableSidebarBrowser() {
                 onClick: () => setExpanded((current) => ({ ...current, [workspace.id]: !isOpen })),
               }, iconOr(isOpen ? "IconChevronDownOutlineRegular" : "IconChevronRightOutlineRegular", isOpen ? "▾" : "▸", 12)),
             ),
-            isOpen && React.createElement("div", null,
-              workspace.sessions.map((session) => React.createElement("div", {
-                key: session.id,
-                className: "bf-row",
-                title: session.id,
-                onClick: () => openSession(session.id),
-                style: {
-                  ...SESSION_ROW_STYLE,
-                  "--dsh-workspace-indent": "12px",
-                  color: session.title ? undefined : "var(--dsw-alias-label-tertiary)",
+            isOpen && (() => {
+              // 官方折叠规则：默认只显示前 COLLAPSED_SESSION_LIMIT 条，其余折成
+              // 「展开其余 N 个会话」，每次再展开同样多（WorkspaceBrowser.tsx:55,591）。
+              const limit = limits[workspace.id] ?? SESSION_FOLD_LIMIT;
+              const visible = workspace.sessions.slice(0, limit);
+              const hidden = workspace.sessions.length - visible.length;
+              return React.createElement("div", null,
+                visible.map((session) => React.createElement("div", {
+                  key: session.id,
+                  className: "bf-row",
+                  title: session.id,
+                  onClick: () => openSession(session.id),
+                  style: {
+                    ...SESSION_ROW_STYLE,
+                    "--dsh-workspace-indent": "12px",
+                    color: session.title ? undefined : "var(--dsw-alias-label-tertiary)",
+                  },
                 },
-              },
-              React.createElement("span", { style: ROW_SLOT_STYLE },
-                iconOr("IconListPenOutlineRegular", "·", 12)),
-              React.createElement("span", { style: ROW_TITLE_STYLE },
-                session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）")),
-              relativeTimeText(session.updatedAt)
-                ? React.createElement("span", { style: ROW_META_STYLE }, relativeTimeText(session.updatedAt))
-                : null,
-              )),
-            ),
+                // 官方：有运行状态时显示状态点，否则渲染 sidebar.session.row.leading。
+                React.createElement("span", { style: ROW_SLOT_STYLE },
+                  session.running
+                    ? React.createElement("span", {
+                      title: "运行中",
+                      style: {
+                        width: "6px", height: "6px", borderRadius: "50%",
+                        background: "var(--dsw-alias-state-success-primary)",
+                      },
+                    })
+                    : iconOr("IconListPenOutlineRegular", "·", 12)),
+                React.createElement("span", { style: ROW_TITLE_STYLE },
+                  session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）")),
+                relativeTimeText(session.updatedAt)
+                  ? React.createElement("span", { style: ROW_META_STYLE }, relativeTimeText(session.updatedAt))
+                  : null,
+                )),
+                hidden > 0 && React.createElement("div", {
+                  className: "bf-row",
+                  style: {
+                    ...SESSION_ROW_STYLE,
+                    "--dsh-workspace-indent": "12px",
+                    color: "var(--dsw-alias-label-tertiary)",
+                  },
+                  onClick: () => setLimits((current) => ({ ...current, [workspace.id]: limit + SESSION_FOLD_LIMIT })),
+                },
+                React.createElement("span", { style: { ...ROW_TITLE_STYLE, marginInlineStart: "16px" } },
+                  `展开其余 ${hidden} 个会话`)),
+              );
+            })(),
           );
         })),
   ),
