@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.4.1";
+const BUNDLE_VERSION = "0.4.2";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -620,6 +620,35 @@ async function mutateTables(action, payload) {
   return api("/collections", { method: "POST", body: { action, ...payload } });
 }
 
+/**
+ * 从客户端 Remote 取全部会话摘要（含冷会话），与官方侧边栏同一数据源。
+ *
+ * 官方侧边栏就是通过 `ctx.remote.session.list({})` 拿到带标题的摘要的。拿不到
+ * （`ctx.remote` 在本插件的 Context 上不可见，或调用失败）时返回空表，由宿主 API 兜底。
+ * @returns {Promise<Map<string, { title: string, updatedAt: number|undefined }>>} 会话 id -> 摘要。
+ */
+async function fetchSessionTitles() {
+  const result = new Map();
+  try {
+    const call = _ctx?.remote?.session?.list;
+    if (typeof call !== "function") return result;
+    const response = await call.call(_ctx.remote.session, {});
+    const list = response?.ok === true ? response.value?.items : response?.items;
+    for (const item of Array.isArray(list) ? list : []) {
+      const id = item?.sessionId ?? item?.id;
+      if (typeof id !== "string" || id.length === 0) continue;
+      result.set(id, {
+        title: typeof item.title === "string" ? item.title : "",
+        updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : undefined,
+      });
+    }
+    if (result.size > 0) reportDiag({ stage: "titles", source: "remote", count: result.size });
+  } catch (error) {
+    reportDiag({ stage: "titles", source: "remote-failed", error: String(error?.message ?? error) });
+  }
+  return result;
+}
+
 // ── 「表」切换面板 ──────────────────────────────────────────────────────────
 
 /**
@@ -747,6 +776,26 @@ const ROW_META_STYLE = {
   fontSize: "10px",
   lineHeight: "16px",
 };
+
+/**
+ * 相对时间文本（对齐官方侧边栏右侧的「5分钟 / 1天」）。
+ * @param {number|undefined} ts 毫秒时间戳。
+ * @returns {string} 文本；拿不到时间戳时返回空串。
+ */
+function relativeTimeText(ts) {
+  if (!Number.isFinite(ts)) return "";
+  const diff = Math.max(0, Date.now() - ts);
+  if (diff < 60_000) return "刚刚";
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} 个月`;
+  return `${Math.floor(months / 12)} 年`;
+}
 
 /** 行内小按钮：`.iconButton { width:16px; height:16px; color:label-tertiary }`。 */
 const ROW_ICON_BUTTON_STYLE = {
@@ -1163,6 +1212,19 @@ function TableSidebarBrowser() {
   const reload = useCallback(async () => {
     try {
       const next = await loadTables();
+      // 会话标题优先从客户端 Remote 取（与官方侧边栏同一数据源，含冷会话）。
+      // 宿主 API 也能给，但那要重启 DSH 才生效；这条路只要刷新页面。
+      const titles = await fetchSessionTitles();
+      if (titles.size > 0) {
+        for (const workspace of next.workspaces ?? []) {
+          for (const session of workspace.sessions ?? []) {
+            const hit = titles.get(session.id);
+            if (hit === undefined) continue;
+            if (hit.title) session.title = hit.title;
+            if (hit.updatedAt !== undefined) session.updatedAt = hit.updatedAt;
+          }
+        }
+      }
       setData(next);
       const wanted = _activeTableId ?? next.collections[0]?.id ?? null;
       setActiveId(wanted);
@@ -1297,6 +1359,9 @@ function TableSidebarBrowser() {
                 iconOr("IconListPenOutlineRegular", "·", 12)),
               React.createElement("span", { style: ROW_TITLE_STYLE },
                 session.title || (session.live ? "未命名会话" : "未加载的会话（点开即加载）")),
+              relativeTimeText(session.updatedAt)
+                ? React.createElement("span", { style: ROW_META_STYLE }, relativeTimeText(session.updatedAt))
+                : null,
               )),
             ),
           );

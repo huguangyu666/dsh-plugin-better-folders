@@ -289,19 +289,41 @@ function sessionTitleOf(ctx, session) {
 }
 
 /**
- * 组装前端要的工作区视图：每个工作区带上它的会话（含标题）。
+ * 组装前端要的工作区视图：每个工作区带上它的会话（含**真实标题**与更新时间）。
  *
- * 只列**宿主当前活跃**的会话 —— 标题来自 `ctx.sessionTitle`，冷会话没有活跃 Session
- * 对象，硬凑只会给出错位的标题，因此如实标记为「未加载」并只给数量。
+ * 标题与时间来自宿主 `ctx.sessionController.list()` —— 它同时覆盖**活跃会话**与
+ * **冷会话**（`summaryFor` / `summarizeCold`），这正是官方侧边栏列表用的同一份数据。
+ * 早先只读 `ctx.sessions.list()`（仅活跃会话）+ `ctx.sessionTitle`，导致冷会话在表视图里
+ * 全变成「未加载的会话」，和官方侧边栏对不上。
  *
  * @param {object} ctx Cordis 上下文。
- * @returns {Array<{ id: string, path: string, title: string, sessions: Array<object>, sessionCount: number }>} 工作区视图。
+ * @returns {Promise<Array<{ id: string, path: string, title: string, sessions: Array<object>, sessionCount: number }>>} 工作区视图。
  */
-function buildWorkspaceView(ctx) {
+async function buildWorkspaceView(ctx) {
   const registry = ctx?.workspaceRegistry
   if (registry === undefined || typeof registry.list !== 'function') return []
 
-  /** 活跃会话 id -> { title, running }。 */
+  /** 会话 id -> 摘要（标题 / 更新时间）。 */
+  const summaryById = new Map()
+  try {
+    const controller = ctx?.sessionController
+    if (controller !== undefined && typeof controller.list === 'function') {
+      const items = await controller.list()
+      for (const item of Array.isArray(items) ? items : []) {
+        const id = item?.sessionId ?? item?.id
+        if (typeof id !== 'string' || id.length === 0) continue
+        summaryById.set(id, {
+          title: typeof item.title === 'string' ? item.title : '',
+          updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : undefined,
+          running: item.running === true,
+        })
+      }
+    }
+  } catch (error) {
+    log('读取会话摘要失败，退回活跃会话:', error?.message ?? error)
+  }
+
+  // 兜底：控制器不可用时，至少用活跃会话 + sessionTitle 凑出标题。
   const live = new Map()
   try {
     const sessions = typeof ctx?.sessions?.list === 'function' ? ctx.sessions.list() : []
@@ -317,11 +339,14 @@ function buildWorkspaceView(ctx) {
   return registry.list().map((workspace) => {
     const sessionIds = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []
     const sessions = sessionIds.map((id) => {
-      const info = live.get(id)
+      const summary = summaryById.get(id)
+      const fallback = live.get(id)
       return {
         id,
-        title: info?.title || '',
-        live: info !== undefined,
+        title: summary?.title || fallback?.title || '',
+        updatedAt: summary?.updatedAt,
+        running: summary?.running === true,
+        live: summary !== undefined || fallback !== undefined,
       }
     })
     return {
@@ -462,7 +487,7 @@ async function handleApi(ctx, req, res) {
       sendJson(res, 200, {
         ok: true,
         collections: loadCollections(),
-        workspaces: buildWorkspaceView(ctx),
+        workspaces: await buildWorkspaceView(ctx),
       })
       return
     }
@@ -510,7 +535,7 @@ async function handleApi(ctx, req, res) {
       sendJson(res, 200, {
         ok: written,
         collections: loadCollections(),
-        workspaces: buildWorkspaceView(ctx),
+        workspaces: await buildWorkspaceView(ctx),
         ...detail,
       })
       return
@@ -663,7 +688,7 @@ const COLLECTIONS_TOOL = {
       action,
       ...detail,
       collections: loadCollections(),
-      workspaces: buildWorkspaceView(ctx).map((workspace) => ({
+      workspaces: (await buildWorkspaceView(ctx)).map((workspace) => ({
         id: workspace.id,
         title: workspace.title,
         path: workspace.path,
@@ -715,7 +740,7 @@ const COMMAND_DEFINITION = {
       const argv = raw.split(/\s+/).slice(1)
       const verb = argv[0] ?? 'list'
       const collections = loadCollections()
-      const workspaces = buildWorkspaceView(ctx)
+      const workspaces = await buildWorkspaceView(ctx)
 
       /** 表名或 id 都能定位（名字优先，其次前缀匹配 id）。 */
       const findCollection = (token) => {
