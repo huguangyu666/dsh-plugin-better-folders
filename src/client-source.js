@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.5.1";
+const BUNDLE_VERSION = "0.5.2";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -1145,6 +1145,26 @@ function TablesPanel({ onClose, anchorLeft = 0, anchorTop = 0, embedded = false 
   const [editor, setEditor] = useState(null); // { mode: "new" | "rename", value: string } | null
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // 点击外部关闭。
+  //
+  // 早先这里铺了一张 `position:fixed; inset:0` 的透明层来接 onClick —— 那是个**全屏
+  // 指针捕获层**：面板一开，整块界面就只剩面板本身能点，手感像"鼠标被锁在一个范围"，
+  // 而且它完全透明、用户看不见。官方原语给的是 useDismissOnOutsidePointer，这里用
+  // 等价的 document 监听实现，**不往页面上放任何全屏元素**。
+  const panelRef = React.useRef(null);
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+  React.useEffect(() => {
+    if (embedded) return undefined;
+    const onPointerDown = (event) => {
+      const node = panelRef.current;
+      if (node !== null && event.target instanceof Node && node.contains(event.target)) return;
+      closeRef.current();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [embedded]);
+
   const refresh = useCallback(async (keepActive = true) => {
     try {
       const next = await loadTables();
@@ -1210,12 +1230,9 @@ function TablesPanel({ onClose, anchorLeft = 0, anchorTop = 0, embedded = false 
   };
 
   return React.createElement(React.Fragment, null,
-    // 点击外部关闭（嵌入主区时不需要）
-    !embedded && React.createElement("div", {
-      onClick: onClose,
-      style: { position: "fixed", inset: 0, zIndex: 59, background: "transparent" },
-    }),
+    // 注意：这里刻意**不放**任何全屏兜底层。点击外部关闭走上面的 document 监听。
     React.createElement("div", {
+      ref: panelRef,
       style: embedded
         ? {
           ...PANEL_SURFACE_STYLE,
