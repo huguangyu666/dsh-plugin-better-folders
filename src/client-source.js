@@ -26,7 +26,7 @@ const TREE_MODE = "workspace-tree";
 /** apply() 时捕获的客户端 Context，供组件调用客户端服务。 */
 let _ctx = null;
 /** 客户端产物版本（用于诊断上报，确认页面加载的是哪一版 bundle）。 */
-const BUNDLE_VERSION = "0.5.0";
+const BUNDLE_VERSION = "0.5.1";
 
 // ── 诊断上报 ────────────────────────────────────────────────────────────────
 //
@@ -559,11 +559,35 @@ const HEADER_CSS = `
 // **不修改官方 DOM**，因此不会和 React 的协调打架。
 
 /**
+ * 缓存的「工作区」标题行节点。
+ *
+ * `[class*="sectionHeader"]` 是**属性子串匹配**，浏览器要逐元素比对 class 属性，在
+ * 大 DOM 上非常贵。之前滚动时每帧都跑一次，直接把主线程打死。改成：命中后缓存节点，
+ * 只要它还挂在 DOM 上就直接复用；只有缓存失效才重查，且最快 1 秒一次。
+ */
+let _headerNode = null;
+let _headerProbeAt = 0;
+
+/**
  * 找到左侧栏里的「工作区」标题行。
  * @returns {{ node: Element, rect: DOMRect } | null} 命中项。
  */
 function findWorkspaceHeader() {
   try {
+    // 1) 先试缓存：命中且仍可见、仍在左侧栏、按钮数没变就直接返回，跳过重选择器。
+    if (_headerNode !== null && _headerNode.isConnected) {
+      const rect = _headerNode.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0 && rect.left <= 460
+        && _headerNode.querySelectorAll("button").length >= 2) {
+        return { node: _headerNode, rect };
+      }
+    }
+    // 2) 缓存失效才重查，并且最多每秒一次（避免滚动期间反复跑昂贵选择器）。
+    _headerNode = null;
+    const now = Date.now();
+    if (now - _headerProbeAt < 1000) return null;
+    _headerProbeAt = now;
+
     const nodes = document.querySelectorAll('[class*="sectionHeader"]');
     let best = null;
     for (const node of nodes) {
@@ -573,6 +597,7 @@ function findWorkspaceHeader() {
       if (node.querySelectorAll("button").length < 2) continue; // 搜索 + 视图选项 + 添加
       if (best === null || rect.top < best.rect.top) best = { node, rect };
     }
+    if (best !== null) _headerNode = best.node;
     return best;
   } catch {
     return null;
@@ -580,44 +605,68 @@ function findWorkspaceHeader() {
 }
 
 /**
- * 订阅标题行的位置（窗口尺寸 / 滚动 / 布局变化都会重测）。
+ * 订阅标题行的位置。
+ *
+ * 关键约束（这里是之前卡死的根因）：**只有位置真的变了才 setState**。否则
+ * 「滚动 → measure → setState(新对象) → 重渲染 → 布局变化 → 滚动」会形成反馈环，
+ * 滚一下 60fps 重渲染，主线程直接锁死。
  * @returns {{ rect: DOMRect | null, searchLeft: number | null }} 当前位置。
  */
 function useHeaderAnchor() {
-  const [anchor, setAnchor] = useState({ rect: null, searchLeft: null });
+  const [anchor, setAnchor] = useState({ rect: null, searchLeft: null, key: "" });
   useEffect(() => {
     let alive = true;
     let lastFound = null;
+    let lastKey = "";
+    let rafId = 0;
+
     const measure = () => {
       if (!alive) return;
       const found = findWorkspaceHeader();
-      // 只在「找到 / 找不到」翻转时上报一次，避免每 600ms 刷屏。
+      // 只在「找到 / 找不到」翻转时上报一次，避免刷屏。
       if ((found !== null) !== lastFound) {
         lastFound = found !== null;
         reportDiag({
           stage: "header",
           found: lastFound,
           hasPrimitives: primitives !== null,
-          matched: document.querySelectorAll('[class*="sectionHeader"]').length,
         });
       }
       if (found === null) {
-        setAnchor((current) => (current.rect === null ? current : { rect: null, searchLeft: null }));
+        if (lastKey === "none") return;
+        lastKey = "none";
+        setAnchor((current) => (current.rect === null ? current : { rect: null, searchLeft: null, key: "none" }));
         return;
       }
       const firstButton = found.node.querySelector("button");
       const searchLeft = firstButton === null ? null : firstButton.getBoundingClientRect().left;
-      setAnchor({ rect: found.rect, searchLeft });
+      // 用取整后的几何值当变更键：亚像素抖动不会引起重渲染。
+      const key = [
+        Math.round(found.rect.left), Math.round(found.rect.top),
+        Math.round(found.rect.width), Math.round(found.rect.height),
+        searchLeft === null ? "n" : Math.round(searchLeft),
+      ].join(",");
+      if (key === lastKey) return;
+      lastKey = key;
+      setAnchor({ rect: found.rect, searchLeft, key });
     };
+
+    // 滚动用 rAF 合并：一帧最多测一次，且 passive 不阻塞滚动。
+    const onScroll = () => {
+      if (rafId !== 0) return;
+      rafId = requestAnimationFrame(() => { rafId = 0; measure(); });
+    };
+
     measure();
-    const timer = setInterval(measure, 600);
+    const timer = setInterval(measure, 1000);
     window.addEventListener("resize", measure);
-    window.addEventListener("scroll", measure, true);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => {
       alive = false;
       clearInterval(timer);
+      if (rafId !== 0) cancelAnimationFrame(rafId);
       window.removeEventListener("resize", measure);
-      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("scroll", onScroll, true);
     };
   }, []);
   return anchor;
@@ -1780,7 +1829,10 @@ function SidebarQuickButton() {
 const name = "dsh-plugin-better-folders";
 // uiWorkspace 必须声明：客户端插件的 Context 只暴露 inject 里列出的服务，
 // 不声明就拿不到视图写入口，视图校准会静默失效（v0.1.1 的实测翻车点）。
-const inject = ["slots", "uiWorkspace"];
+// `remote` 也必须声明 —— 否则 ctx.remote 访问直接抛
+// 「cannot get property "remote" without inject」（v0.5.0 的 diag 实测），
+// 会话标题就取不到。ui-workspace 的 inject 里同样有 'remote'。
+const inject = ["slots", "uiWorkspace", "remote"];
 
 function apply(ctx) {
   _ctx = ctx;
